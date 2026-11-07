@@ -371,6 +371,21 @@ static id CallRequestGlobalMouseEvents(NSMethodSignature *sig, SEL sel, id displ
     return nil;
 }
 
+static NSString *AsString(id value)
+{
+    if (!value) return nil;
+    if ([value isKindOfClass:[NSString class]]) return value;
+    if ([value isKindOfClass:[NSUUID class]]) return [(NSUUID *)value UUIDString];
+    return [value description];
+}
+
+static void AddCandidate(NSMutableArray<NSString *> *list, id value, NSString *label)
+{
+    NSString *s = AsString(value);
+    Show(@"phase2: candidate %@ = %@", label, s);
+    if (s.length && ![list containsObject:s]) [list addObject:s];
+}
+
 static void RequestGlobalMouseEvents(void)
 {
     if (!gService) return;
@@ -387,45 +402,73 @@ static void RequestGlobalMouseEvents(void)
         return;
     }
 
+    NSMutableArray<NSString *> *candidates = [NSMutableArray array];
+
+    // BKSHIDEventDisplay's own hardware identifier.
     Class dispCls = NSClassFromString(@"BKSHIDEventDisplay");
-    id display = nil;
     SEL builtinSel = NSSelectorFromString(@"builtinDisplay");
     if (dispCls && [dispCls respondsToSelector:builtinSel]) {
-        display = ((id (*)(id, SEL))objc_msgSend)(dispCls, builtinSel);
+        id builtin = ((id (*)(id, SEL))objc_msgSend)(dispCls, builtinSel);
+        Show(@"phase2: BKSHIDEventDisplay builtinDisplay=%@", builtin);
+        if (builtin) {
+            id hardware = nil;
+            @try { hardware = [builtin valueForKey:@"_hardwareIdentifier"]; } @catch (NSException *e) {}
+            AddCandidate(candidates, hardware, @"BKSHIDEventDisplay._hardwareIdentifier");
+        }
     }
-    Show(@"phase2: display=%@", display);
-    if (!display) {
-        Show(@"phase2: no display, not calling");
+
+    // UIScreen's FBSDisplayConfiguration.
+    UIScreen *screen = UIScreen.mainScreen;
+    SEL configSel = NSSelectorFromString(@"displayConfiguration");
+    if ([screen respondsToSelector:configSel]) {
+        id config = ((id (*)(id, SEL))objc_msgSend)(screen, configSel);
+        Show(@"phase2: displayConfiguration=%@", config);
+        if (config) {
+            id identity = nil, hardware = nil, uniqueID = nil;
+            @try { identity = [config valueForKey:@"identity"]; } @catch (NSException *e) {}
+            @try { hardware = [config valueForKey:@"hardwareIdentifier"]; } @catch (NSException *e) {}
+            @try { uniqueID = [config valueForKey:@"uniqueID"]; } @catch (NSException *e) {}
+            Show(@"phase2: identity=%@ hardware=%@ uniqueID=%@", identity, hardware, uniqueID);
+            if (identity) {
+                id uid = nil;
+                @try { uid = [identity valueForKey:@"uniqueIdentifier"]; } @catch (NSException *e) {}
+                AddCandidate(candidates, uid, @"FBSDisplayIdentity.uniqueIdentifier");
+            }
+            AddCandidate(candidates, hardware, @"FBSDisplayConfiguration.hardwareIdentifier");
+            AddCandidate(candidates, uniqueID, @"FBSDisplayConfiguration.uniqueID");
+        }
+    }
+
+    // Any display UUID the service already knows about.
+    @try {
+        id map = [gService valueForKey:@"_displayUUIDToPerDisplayInfo"];
+        if ([map isKindOfClass:[NSDictionary class]]) {
+            Show(@"phase2: service display map keys=%@", [map allKeys]);
+            for (id key in [map allKeys]) AddCandidate(candidates, key, @"_displayUUIDToPerDisplayInfo key");
+        }
+    } @catch (NSException *e) {}
+
+    if (!candidates.count) {
+        Show(@"phase2: no display UUID candidates");
         return;
     }
 
-    id ret = nil;
-
-    // Prefer the 2-arg form: no options object to get wrong.
     SEL sel2 = NSSelectorFromString(@"requestGlobalMouseEventsForDisplay:targetContextID:");
-    if ([gService respondsToSelector:sel2]) {
-        NSMethodSignature *sig2 = [gService methodSignatureForSelector:sel2];
-        Show(@"phase2: trying 2-arg (nargs=%lu ret=%s)",
-             (unsigned long)sig2.numberOfArguments, sig2.methodReturnType);
-        ret = CallRequestGlobalMouseEvents(sig2, sel2, display, ctx, nil);
-        Show(@"phase2: return(2-arg)=%@", ret);
-    } else {
+    if (![gService respondsToSelector:sel2]) {
         Show(@"phase2: 2-arg selector absent");
+        return;
+    }
+    NSMethodSignature *sig2 = [gService methodSignatureForSelector:sel2];
+
+    id ret = nil;
+    for (NSString *uuid in candidates) {
+        Show(@"phase2: trying 2-arg with %@", uuid);
+        ret = CallRequestGlobalMouseEvents(sig2, sel2, uuid, ctx, nil);
+        Show(@"phase2: return(2-arg, %@)=%@", uuid, ret);
+        if (ret) break;
     }
 
-    // Only try the options variant when we actually have an options object.
-    SEL sel3 = NSSelectorFromString(@"requestGlobalMouseEventsForDisplay:targetContextID:options:");
-    Class optCls = NSClassFromString(@"BKSMousePointerGlobalContextOptions");
-    if (!ret && optCls && [gService respondsToSelector:sel3]) {
-        NSMethodSignature *sig3 = [gService methodSignatureForSelector:sel3];
-        id opts = [optCls new];
-        Show(@"phase2: trying 3-arg options=%@ (nargs=%lu)",
-             opts, (unsigned long)sig3.numberOfArguments);
-        ret = CallRequestGlobalMouseEvents(sig3, sel3, display, ctx, opts);
-        Show(@"phase2: return(3-arg)=%@", ret);
-    }
-
-    gGlobalRoute = ret;   // keep any route/assertion alive
+    gGlobalRoute = ret;
 }
 
 #pragma mark - start
