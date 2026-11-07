@@ -19,7 +19,9 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    # Same standard runner the Henge IPA workflow uses (arm64, GA since Oct 2026).
+    # `macos-14` was cancelled before a runner picked it up.
+    runs-on: xcode-27
     timeout-minutes: 15
 
     steps:
