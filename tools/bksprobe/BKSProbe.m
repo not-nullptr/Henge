@@ -22,6 +22,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <CoreGraphics/CGDirectDisplay.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dlfcn.h>
