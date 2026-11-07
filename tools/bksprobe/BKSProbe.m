@@ -22,7 +22,6 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
-#import <CoreGraphics/CGDirectDisplay.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dlfcn.h>
@@ -314,19 +313,13 @@ static id CallRequestGlobalMouseEvents(NSMethodSignature *sig, id display, unsig
     inv.target = gService;
     inv.selector = NSSelectorFromString(@"requestGlobalMouseEventsForDisplay:targetContextID:options:");
 
+    // BKSHIDEventDisplay * on every iOS version that has this method.
     const char *t2 = [sig getArgumentTypeAtIndex:2];
-    if (t2[0] == '@') {
-        [inv setArgument:&display atIndex:2];
-    } else if (t2[0] == 'I' || t2[0] == 'i') {
-        unsigned int did = (unsigned int)CGMainDisplayID();
-        [inv setArgument:&did atIndex:2];
-    } else if (t2[0] == 'Q' || t2[0] == 'q') {
-        unsigned long long did = (unsigned long long)CGMainDisplayID();
-        [inv setArgument:&did atIndex:2];
-    } else {
+    if (t2[0] != '@') {
         Show(@"phase2: unsupported display type %s", t2);
         return nil;
     }
+    [inv setArgument:&display atIndex:2];
 
     const char *t3 = [sig getArgumentTypeAtIndex:3];
     if (t3[0] == 'I' || t3[0] == 'i') {
