@@ -411,7 +411,10 @@ static id CallRequestGlobalMouseEvents(NSMethodSignature *sig, SEL sel, id displ
     }
 
     if (sig.methodReturnType[0] == '@' && sig.methodReturnLength == sizeof(id)) {
-        id ret = nil;
+        // getReturnValue: writes the pointer without a retain. A plain `id`
+        // here would make ARC release an object it does not own, over-releasing
+        // the BSCompoundAssertion acquisition and trapping in its dealloc.
+        __unsafe_unretained id ret = nil;
         [inv getReturnValue:&ret];
         return ret;
     }
