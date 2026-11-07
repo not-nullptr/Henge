@@ -39,6 +39,7 @@ static id gObserver;
 static id gObserverToken;
 static NSString *gLogPath;
 static BOOL gStarted;
+static id gGlobalRoute;
 
 static CGPoint gLastGlobal, gLastNormalized;
 static BOOL gHaveGlobal, gHaveNormalized;
@@ -254,6 +255,180 @@ static void Poll(void)
     }
 }
 
+#pragma mark - phase 2: request global mouse events
+
+static UIWindow *KeyWindow(void)
+{
+    UIWindow *best = nil;
+    for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
+        if (![s isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *w in ((UIWindowScene *)s).windows) {
+            if (w.isKeyWindow) return w;
+            if (!best) best = w;
+        }
+    }
+    return best;
+}
+
+// Logs hover / indirect-pointer events, which is what a successful
+// requestGlobalMouseEvents... should start delivering.
+static void LogEvent(UIEvent *event)
+{
+    static int count = 0;
+    if (count >= 60) return;
+    if (event.type != UIEventTypeHover && event.type != UIEventTypeTouches) return;
+
+    BOOL interesting = (event.type == UIEventTypeHover);
+    NSMutableString *touches = [NSMutableString string];
+    for (UITouch *t in event.allTouches) {
+        if (t.type == UITouchTypeIndirectPointer) interesting = YES;
+        [touches appendFormat:@" %ld", (long)t.type];
+    }
+    if (!interesting) return;
+
+    count++;
+    Show(@"EVENT type=%ld touches=%@", (long)event.type, touches);
+}
+
+@implementation UIWindow (BKSProbeEvents)
++ (void)load
+{
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Method a = class_getInstanceMethod(self, @selector(sendEvent:));
+        Method b = class_getInstanceMethod(self, @selector(bks_sendEvent:));
+        if (a && b) method_exchangeImplementations(a, b);
+    });
+}
+- (void)bks_sendEvent:(UIEvent *)event
+{
+    LogEvent(event);
+    [self bks_sendEvent:event];
+}
+@end
+
+static id CallRequestGlobalMouseEvents(NSMethodSignature *sig, id display, unsigned int ctx, id options)
+{
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    inv.target = gService;
+    inv.selector = NSSelectorFromString(@"requestGlobalMouseEventsForDisplay:targetContextID:options:");
+
+    const char *t2 = [sig getArgumentTypeAtIndex:2];
+    if (t2[0] == '@') {
+        [inv setArgument:&display atIndex:2];
+    } else if (t2[0] == 'I' || t2[0] == 'i') {
+        unsigned int did = (unsigned int)CGMainDisplayID();
+        [inv setArgument:&did atIndex:2];
+    } else if (t2[0] == 'Q' || t2[0] == 'q') {
+        unsigned long long did = (unsigned long long)CGMainDisplayID();
+        [inv setArgument:&did atIndex:2];
+    } else {
+        Show(@"phase2: unsupported display type %s", t2);
+        return nil;
+    }
+
+    const char *t3 = [sig getArgumentTypeAtIndex:3];
+    if (t3[0] == 'I' || t3[0] == 'i') {
+        [inv setArgument:&ctx atIndex:3];
+    } else if (t3[0] == 'Q' || t3[0] == 'q') {
+        unsigned long long c = ctx;
+        [inv setArgument:&c atIndex:3];
+    } else {
+        Show(@"phase2: unsupported context type %s", t3);
+        return nil;
+    }
+
+    const char *t4 = [sig getArgumentTypeAtIndex:4];
+    if (t4[0] == '@') {
+        [inv setArgument:&options atIndex:4];
+    } else if (t4[0] == 'I' || t4[0] == 'i') {
+        unsigned int zero = 0;
+        [inv setArgument:&zero atIndex:4];
+    } else if (t4[0] == 'Q' || t4[0] == 'q') {
+        unsigned long long zero = 0;
+        [inv setArgument:&zero atIndex:4];
+    } else {
+        Show(@"phase2: unsupported options type %s", t4);
+        return nil;
+    }
+
+    @try {
+        [inv invoke];
+    } @catch (NSException *e) {
+        Show(@"phase2: exception %@", e);
+        return nil;
+    }
+
+    if (sig.methodReturnType[0] == '@' && sig.methodReturnLength == sizeof(id)) {
+        id ret = nil;
+        [inv getReturnValue:&ret];
+        return ret;
+    }
+    Show(@"phase2: return len=%lu type=%s",
+         (unsigned long)sig.methodReturnLength, sig.methodReturnType);
+    return nil;
+}
+
+static void RequestGlobalMouseEvents(void)
+{
+    if (!gService) return;
+
+    SEL sel = NSSelectorFromString(@"requestGlobalMouseEventsForDisplay:targetContextID:options:");
+    if (![gService respondsToSelector:sel]) {
+        Show(@"phase2: selector absent");
+        return;
+    }
+    NSMethodSignature *sig = [gService methodSignatureForSelector:sel];
+    if (!sig) {
+        Show(@"phase2: no signature");
+        return;
+    }
+    Show(@"phase2: nargs=%lu ret=%s", (unsigned long)sig.numberOfArguments, sig.methodReturnType);
+    for (NSUInteger i = 2; i < sig.numberOfArguments; i++) {
+        Show(@"phase2: arg%lu=%s", (unsigned long)i, [sig getArgumentTypeAtIndex:i]);
+    }
+    if (sig.numberOfArguments != 5) {
+        Show(@"phase2: unexpected arg count");
+        return;
+    }
+
+    UIWindow *window = KeyWindow();
+    unsigned int ctx = 0;
+    SEL ctxSel = NSSelectorFromString(@"_contextId");
+    if (window && [window respondsToSelector:ctxSel]) {
+        ctx = ((unsigned int (*)(id, SEL))objc_msgSend)(window, ctxSel);
+    }
+    Show(@"phase2: window=%@ ctx=%u", window, ctx);
+    if (!ctx) {
+        Show(@"phase2: no context id, not calling");
+        return;
+    }
+
+    Class dispCls = NSClassFromString(@"BKSHIDEventDisplay");
+    id display = nil;
+    SEL builtinSel = NSSelectorFromString(@"builtinDisplay");
+    if (dispCls && [dispCls respondsToSelector:builtinSel]) {
+        display = ((id (*)(id, SEL))objc_msgSend)(dispCls, builtinSel);
+    }
+    Show(@"phase2: display=%@", display);
+
+    Show(@"phase2: calling requestGlobalMouseEvents (nil options)...");
+    id ret = CallRequestGlobalMouseEvents(sig, display, ctx, nil);
+    Show(@"phase2: return(nil opts)=%@", ret);
+
+    if (!ret) {
+        Class optCls = NSClassFromString(@"BKSMousePointerGlobalContextOptions");
+        if (optCls) {
+            id opts = [optCls new];
+            Show(@"phase2: retrying with options=%@", opts);
+            ret = CallRequestGlobalMouseEvents(sig, display, ctx, opts);
+            Show(@"phase2: return(opts)=%@", ret);
+        }
+    }
+
+    gGlobalRoute = ret;   // keep any route/assertion alive
+}
+
 #pragma mark - start
 
 static void Start(void)
@@ -319,6 +494,13 @@ static void Start(void)
     [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *timer) {
         Poll();
     }];
+
+    // Give phase 1 a few seconds to show whether the pointer is tracked, then
+    // ask backboardd to route global mouse events to this window's context.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        RequestGlobalMouseEvents();
+    });
 }
 
 #pragma mark - entry

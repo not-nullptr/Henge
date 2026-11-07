@@ -49,6 +49,24 @@ LiveContainer signs tweaks itself before launch, so no `ldid` step.
    (`LiveContainer` → `Data/Application/<container>/Documents/BKSProbe.log`).
 6. Optional second run with AssistiveTouch **ON**, for comparison.
 
+## Phase 2 (automatic)
+
+Six seconds after the overlay appears, the probe calls
+
+```objc
+-[BKSMousePointerService requestGlobalMouseEventsForDisplay:targetContextID:options:]
+```
+
+with `+[BKSHIDEventDisplay builtinDisplay]`, the key window's `_contextId`, and
+`nil` options; if that returns nil it retries with a fresh
+`BKSMousePointerGlobalContextOptions`. It keeps the returned route object alive
+and logs every hover / indirect-pointer `UIEvent` that reaches the window
+(`EVENT type=...`).
+
+That is the switch that should make backboardd route the mouse to this app even
+when no system pointer exists. If `EVENT` lines appear with AT off, we have a
+real no-AssistiveTouch path.
+
 ## Reading the result
 
 | Log line | Meaning |
@@ -60,6 +78,9 @@ LiveContainer signs tweaks itself before launch, so no `ldid` step.
 | `globalPointerPosition = (...)` changing, AT off | Jackpot: backboardd tracks the pointer without AT. |
 | Position static but `devices > 0` | Next step is `requestGlobalMouseEventsForDisplay:targetContextID:options:`; the `sig ...` line gives its ABI. |
 | `GCMouse.mice.count = 0` | Expected without AT; confirms why Henge is silent. |
+| `phase2: return(...) = <...>` | The route object was created. Watch for `EVENT` lines. |
+| `phase2: return(...) = (null)` | The service refused the request (or the call is not permitted for this process). |
+| `EVENT type=... touches=...` | Mouse events reached the window with AT off. This is the win. |
 
 The `M ...` lines (full method list with type encodings) are the most useful
 part if we need to go further.
