@@ -42,6 +42,7 @@ static BOOL gStarted;
 static BOOL gRouteCreated;
 static int gGCMouseLogCount;
 static id gGlobalRoute;
+static NSMutableArray *gGlobalRoutes;
 
 static CGPoint gLastGlobal, gLastNormalized;
 static BOOL gHaveGlobal, gHaveNormalized;
@@ -438,18 +439,75 @@ static void AddCandidate(NSMutableArray<NSString *> *list, id value, NSString *l
     if (s.length && ![list containsObject:s]) [list addObject:s];
 }
 
+static NSArray<NSNumber *> *ContextIDCandidates(UIWindow *window)
+{
+    NSMutableArray<NSNumber *> *ids = [NSMutableArray array];
+    SEL ctxSel = NSSelectorFromString(@"_contextId");
+
+    if ([window respondsToSelector:ctxSel]) {
+        unsigned int c = ((unsigned int (*)(id, SEL))objc_msgSend)(window, ctxSel);
+        Show(@"phase2: window _contextId=%u", c);
+        if (c) [ids addObject:@(c)];
+    }
+
+    UIScene *scene = window.windowScene;
+    if (!scene) return ids;
+
+    if ([scene respondsToSelector:ctxSel]) {
+        unsigned int c = ((unsigned int (*)(id, SEL))objc_msgSend)(scene, ctxSel);
+        Show(@"phase2: scene _contextId=%u", c);
+        if (c && ![ids containsObject:@(c)]) [ids addObject:@(c)];
+    }
+
+    @try {
+        id fbs = [scene valueForKey:@"_FBSScene"];
+        Show(@"phase2: _FBSScene=%@", fbs);
+        if (fbs) {
+            for (NSString *key in @[@"contextID", @"_contextID", @"contextId"]) {
+                @try {
+                    id v = [fbs valueForKey:key];
+                    Show(@"phase2: _FBSScene.%@=%@", key, v);
+                    if ([v respondsToSelector:@selector(unsignedIntValue)]) {
+                        unsigned int c = [v unsignedIntValue];
+                        if (c && ![ids containsObject:@(c)]) [ids addObject:@(c)];
+                    }
+                } @catch (NSException *e) {}
+            }
+        }
+    } @catch (NSException *e) {}
+
+    @try {
+        id binder = [scene valueForKey:@"_contextBinder"];
+        Show(@"phase2: _contextBinder=%@", binder);
+        SEL contextForBindable = NSSelectorFromString(@"_contextForBindable:");
+        if (binder && [binder respondsToSelector:contextForBindable]) {
+            id ctx = ((id (*)(id, SEL, id))objc_msgSend)(binder, contextForBindable, window);
+            Show(@"phase2: _contextForBindable=%@", ctx);
+            SEL ctxIdSel = NSSelectorFromString(@"contextId");
+            if (ctx && [ctx respondsToSelector:ctxIdSel]) {
+                unsigned int c = ((unsigned int (*)(id, SEL))objc_msgSend)(ctx, ctxIdSel);
+                Show(@"phase2: CAContext contextId=%u", c);
+                if (c && ![ids containsObject:@(c)]) [ids addObject:@(c)];
+            }
+        }
+    } @catch (NSException *e) {}
+
+    return ids;
+}
+
 static void RequestGlobalMouseEvents(void)
 {
     if (!gService) return;
 
     UIWindow *window = KeyWindow();
-    unsigned int ctx = 0;
-    SEL ctxSel = NSSelectorFromString(@"_contextId");
-    if (window && [window respondsToSelector:ctxSel]) {
-        ctx = ((unsigned int (*)(id, SEL))objc_msgSend)(window, ctxSel);
+    if (!window) {
+        Show(@"phase2: no window");
+        return;
     }
-    Show(@"phase2: window=%@ ctx=%u", window, ctx);
-    if (!ctx) {
+
+    NSArray<NSNumber *> *ctxs = ContextIDCandidates(window);
+    Show(@"phase2: context candidates=%@", ctxs);
+    if (!ctxs.count) {
         Show(@"phase2: no context id, not calling");
         return;
     }
@@ -512,18 +570,22 @@ static void RequestGlobalMouseEvents(void)
     }
     NSMethodSignature *sig2 = [gService methodSignatureForSelector:sel2];
 
-    id ret = nil;
+    gGlobalRoutes = [NSMutableArray array];
     for (NSString *uuid in candidates) {
-        Show(@"phase2: trying 2-arg with %@", uuid);
-        ret = CallRequestGlobalMouseEvents(sig2, sel2, uuid, ctx, nil);
-        Show(@"phase2: return(2-arg, %@)=%@", uuid, ret);
-        if (ret) break;
+        for (NSNumber *ctxNum in ctxs) {
+            unsigned int ctx = ctxNum.unsignedIntValue;
+            Show(@"phase2: trying 2-arg display=%@ ctx=%u", uuid, ctx);
+            id ret = CallRequestGlobalMouseEvents(sig2, sel2, uuid, ctx, nil);
+            Show(@"phase2: return(display=%@, ctx=%u)=%@", uuid, ctx, ret);
+            if (ret) [gGlobalRoutes addObject:ret];
+        }
     }
 
-    gGlobalRoute = ret;
-    if (ret) {
+    gGlobalRoute = gGlobalRoutes.firstObject;
+    if (gGlobalRoutes.count) {
         gRouteCreated = YES;
-        Show(@"ROUTE CREATED — move the mouse and click now");
+        Show(@"ROUTE CREATED (%lu) — move the mouse and click now",
+             (unsigned long)gGlobalRoutes.count);
         InstallGCMouseLogging();
     }
 }

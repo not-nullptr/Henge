@@ -63,7 +63,11 @@ and any key already in the service's `_displayUUIDToPerDisplayInfo` — then cal
 
 with each one until one returns a route. The display argument is a **string**,
 not a `BKSHIDEventDisplay`: the service calls `length` on it (that is how the
-first build found out). The context is the key window's `_contextId`.
+first build found out). The context ID candidates are the key window's
+`_contextId`, the scene's `_contextId`, `_FBSScene.contextID`, and the
+`_UIContextBinder`'s `CAContext.contextId` — `assistivetouchd` registers the
+same route with the **scene's** context ID, so the window's may be the wrong
+one.
 
 The service accepts a **display hardware identifier string** (the first build
 passed a `BKSHIDEventDisplay` and the service called `length` on it). On an
