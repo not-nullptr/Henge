@@ -58,7 +58,8 @@ static NSString *ProbeLogPath(void)
     return gLogPath;
 }
 
-// Safe from any thread: NSLog immediately, UI + file on the main queue.
+// Safe from any thread. The file write is synchronous so the last line is on
+// disk even if the very next call kills the process.
 static void Show(NSString *fmt, ...)
 {
     va_list ap;
@@ -69,20 +70,24 @@ static void Show(NSString *fmt, ...)
 
     NSLog(@"[%@] %@", PROBE_TAG, line);
 
+    static NSLock *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSLock new]; });
+
+    [lock lock];
+    if (!gLog) gLog = [NSMutableString new];
+    [gLog appendFormat:@"%@\n", line];
+    [gLog writeToFile:ProbeLogPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
+
+    NSArray<NSString *> *lines = [gLog componentsSeparatedByString:@"\n"];
+    NSUInteger keep = 34;
+    NSString *text = lines.count > keep
+        ? [[lines subarrayWithRange:NSMakeRange(lines.count - keep, keep)] componentsJoinedByString:@"\n"]
+        : [gLog copy];
+    [lock unlock];
+
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (!gLog) gLog = [NSMutableString new];
-        [gLog appendFormat:@"%@\n", line];
-
-        [gLog writeToFile:ProbeLogPath() atomically:YES encoding:NSUTF8StringEncoding error:nil];
-
-        if (gLabel) {
-            NSArray<NSString *> *lines = [gLog componentsSeparatedByString:@"\n"];
-            NSUInteger keep = 34;
-            if (lines.count > keep) {
-                gLog = [[lines subarrayWithRange:NSMakeRange(lines.count - keep, keep)] componentsJoinedByString:@"\n"].mutableCopy;
-            }
-            gLabel.text = gLog;
-        }
+        if (gLabel) gLabel.text = text;
     });
 }
 
@@ -216,6 +221,8 @@ static BOOL ReadPoint(NSString *name, CGPoint *out)
 
 static void Poll(void)
 {
+    // The scene can appear after Start(); attach the overlay whenever it does.
+    if (!gWindow) EnsureOverlay();
     if (!gService) return;
 
     CGPoint p = CGPointZero;
@@ -275,6 +282,7 @@ static UIWindow *KeyWindow(void)
 static void LogEvent(UIEvent *event)
 {
     static int count = 0;
+    if (!gStarted || !event) return;
     if (count >= 60) return;
     if (event.type != UIEventTypeHover && event.type != UIEventTypeTouches) return;
 
@@ -291,15 +299,6 @@ static void LogEvent(UIEvent *event)
 }
 
 @implementation UIWindow (BKSProbeEvents)
-+ (void)load
-{
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        Method a = class_getInstanceMethod(self, @selector(sendEvent:));
-        Method b = class_getInstanceMethod(self, @selector(bks_sendEvent:));
-        if (a && b) method_exchangeImplementations(a, b);
-    });
-}
 - (void)bks_sendEvent:(UIEvent *)event
 {
     LogEvent(event);
@@ -307,13 +306,25 @@ static void LogEvent(UIEvent *event)
 }
 @end
 
-static id CallRequestGlobalMouseEvents(NSMethodSignature *sig, id display, unsigned int ctx, id options)
+// Installed only after the overlay is up, so a bad swizzle can never break
+// the app's startup.
+static void InstallEventLogger(void)
+{
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Method a = class_getInstanceMethod(UIWindow.class, @selector(sendEvent:));
+        Method b = class_getInstanceMethod(UIWindow.class, @selector(bks_sendEvent:));
+        if (a && b) method_exchangeImplementations(a, b);
+    });
+}
+
+static id CallRequestGlobalMouseEvents(NSMethodSignature *sig, SEL sel, id display, unsigned int ctx, id options)
 {
     NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
     inv.target = gService;
-    inv.selector = NSSelectorFromString(@"requestGlobalMouseEventsForDisplay:targetContextID:options:");
+    inv.selector = sel;
 
-    // BKSHIDEventDisplay * on every iOS version that has this method.
+    // Arg 2: BKSHIDEventDisplay *
     const char *t2 = [sig getArgumentTypeAtIndex:2];
     if (t2[0] != '@') {
         Show(@"phase2: unsupported display type %s", t2);
@@ -321,6 +332,7 @@ static id CallRequestGlobalMouseEvents(NSMethodSignature *sig, id display, unsig
     }
     [inv setArgument:&display atIndex:2];
 
+    // Arg 3: unsigned int context id
     const char *t3 = [sig getArgumentTypeAtIndex:3];
     if (t3[0] == 'I' || t3[0] == 'i') {
         [inv setArgument:&ctx atIndex:3];
@@ -332,18 +344,14 @@ static id CallRequestGlobalMouseEvents(NSMethodSignature *sig, id display, unsig
         return nil;
     }
 
-    const char *t4 = [sig getArgumentTypeAtIndex:4];
-    if (t4[0] == '@') {
+    // Arg 4 (3-arg variant only): BKSMousePointerGlobalContextOptions *
+    if (sig.numberOfArguments > 4) {
+        const char *t4 = [sig getArgumentTypeAtIndex:4];
+        if (t4[0] != '@') {
+            Show(@"phase2: unsupported options type %s", t4);
+            return nil;
+        }
         [inv setArgument:&options atIndex:4];
-    } else if (t4[0] == 'I' || t4[0] == 'i') {
-        unsigned int zero = 0;
-        [inv setArgument:&zero atIndex:4];
-    } else if (t4[0] == 'Q' || t4[0] == 'q') {
-        unsigned long long zero = 0;
-        [inv setArgument:&zero atIndex:4];
-    } else {
-        Show(@"phase2: unsupported options type %s", t4);
-        return nil;
     }
 
     @try {
@@ -367,25 +375,6 @@ static void RequestGlobalMouseEvents(void)
 {
     if (!gService) return;
 
-    SEL sel = NSSelectorFromString(@"requestGlobalMouseEventsForDisplay:targetContextID:options:");
-    if (![gService respondsToSelector:sel]) {
-        Show(@"phase2: selector absent");
-        return;
-    }
-    NSMethodSignature *sig = [gService methodSignatureForSelector:sel];
-    if (!sig) {
-        Show(@"phase2: no signature");
-        return;
-    }
-    Show(@"phase2: nargs=%lu ret=%s", (unsigned long)sig.numberOfArguments, sig.methodReturnType);
-    for (NSUInteger i = 2; i < sig.numberOfArguments; i++) {
-        Show(@"phase2: arg%lu=%s", (unsigned long)i, [sig getArgumentTypeAtIndex:i]);
-    }
-    if (sig.numberOfArguments != 5) {
-        Show(@"phase2: unexpected arg count");
-        return;
-    }
-
     UIWindow *window = KeyWindow();
     unsigned int ctx = 0;
     SEL ctxSel = NSSelectorFromString(@"_contextId");
@@ -405,19 +394,35 @@ static void RequestGlobalMouseEvents(void)
         display = ((id (*)(id, SEL))objc_msgSend)(dispCls, builtinSel);
     }
     Show(@"phase2: display=%@", display);
+    if (!display) {
+        Show(@"phase2: no display, not calling");
+        return;
+    }
 
-    Show(@"phase2: calling requestGlobalMouseEvents (nil options)...");
-    id ret = CallRequestGlobalMouseEvents(sig, display, ctx, nil);
-    Show(@"phase2: return(nil opts)=%@", ret);
+    id ret = nil;
 
-    if (!ret) {
-        Class optCls = NSClassFromString(@"BKSMousePointerGlobalContextOptions");
-        if (optCls) {
-            id opts = [optCls new];
-            Show(@"phase2: retrying with options=%@", opts);
-            ret = CallRequestGlobalMouseEvents(sig, display, ctx, opts);
-            Show(@"phase2: return(opts)=%@", ret);
-        }
+    // Prefer the 2-arg form: no options object to get wrong.
+    SEL sel2 = NSSelectorFromString(@"requestGlobalMouseEventsForDisplay:targetContextID:");
+    if ([gService respondsToSelector:sel2]) {
+        NSMethodSignature *sig2 = [gService methodSignatureForSelector:sel2];
+        Show(@"phase2: trying 2-arg (nargs=%lu ret=%s)",
+             (unsigned long)sig2.numberOfArguments, sig2.methodReturnType);
+        ret = CallRequestGlobalMouseEvents(sig2, sel2, display, ctx, nil);
+        Show(@"phase2: return(2-arg)=%@", ret);
+    } else {
+        Show(@"phase2: 2-arg selector absent");
+    }
+
+    // Only try the options variant when we actually have an options object.
+    SEL sel3 = NSSelectorFromString(@"requestGlobalMouseEventsForDisplay:targetContextID:options:");
+    Class optCls = NSClassFromString(@"BKSMousePointerGlobalContextOptions");
+    if (!ret && optCls && [gService respondsToSelector:sel3]) {
+        NSMethodSignature *sig3 = [gService methodSignatureForSelector:sel3];
+        id opts = [optCls new];
+        Show(@"phase2: trying 3-arg options=%@ (nargs=%lu)",
+             opts, (unsigned long)sig3.numberOfArguments);
+        ret = CallRequestGlobalMouseEvents(sig3, sel3, display, ctx, opts);
+        Show(@"phase2: return(3-arg)=%@", ret);
     }
 
     gGlobalRoute = ret;   // keep any route/assertion alive
@@ -489,9 +494,11 @@ static void Start(void)
         Poll();
     }];
 
-    // Give phase 1 a few seconds to show whether the pointer is tracked, then
-    // ask backboardd to route global mouse events to this window's context.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)),
+    InstallEventLogger();
+
+    // Give phase 1 time to show whether the pointer is tracked, then ask
+    // backboardd to route global mouse events to this window's context.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         RequestGlobalMouseEvents();
     });

@@ -51,17 +51,21 @@ LiveContainer signs tweaks itself before launch, so no `ldid` step.
 
 ## Phase 2 (automatic)
 
-Six seconds after the overlay appears, the probe calls
+Ten seconds after the overlay appears, the probe calls
 
 ```objc
--[BKSMousePointerService requestGlobalMouseEventsForDisplay:targetContextID:options:]
+-[BKSMousePointerService requestGlobalMouseEventsForDisplay:targetContextID:]
 ```
 
-with `+[BKSHIDEventDisplay builtinDisplay]`, the key window's `_contextId`, and
-`nil` options; if that returns nil it retries with a fresh
-`BKSMousePointerGlobalContextOptions`. It keeps the returned route object alive
-and logs every hover / indirect-pointer `UIEvent` that reaches the window
-(`EVENT type=...`).
+first (no options object to get wrong), then the `options:` variant with a
+fresh `BKSMousePointerGlobalContextOptions` if the first returns nil. The
+display is `+[BKSHIDEventDisplay builtinDisplay]`; the context is the key
+window's `_contextId`. It keeps the returned route object alive and logs every
+hover / indirect-pointer `UIEvent` that reaches the window (`EVENT type=...`).
+
+The event logger is installed only after the overlay is up, and the log file is
+written synchronously, so a crash during phase 2 still leaves the last line on
+disk.
 
 That is the switch that should make backboardd route the mouse to this app even
 when no system pointer exists. If `EVENT` lines appear with AT off, we have a
