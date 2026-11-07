@@ -65,6 +65,16 @@ with each one until one returns a route. The display argument is a **string**,
 not a `BKSHIDEventDisplay`: the service calls `length` on it (that is how the
 first build found out). The context is the key window's `_contextId`.
 
+The service accepts a **display hardware identifier string** (the first build
+passed a `BKSHIDEventDisplay` and the service called `length` on it). On an
+iPhone 17 Pro / iOS 27.0.1 the working value was `987-654-321`, from
+`FBSDisplayConfiguration.hardwareIdentifier`; the returned route looked like
+`<CAcq ...:display:987-654-321 context:9EBEAE15>`.
+
+After the route is created the probe logs `ROUTE CREATED — move the mouse and
+click now`, wraps whatever `GCMouse` handlers the guest already installed
+(without replacing them), and logs every `UIEvent` type that reaches the app.
+
 The event logger is installed only after the overlay is up, and the log file is
 written synchronously, so a crash during phase 2 still leaves the last line on
 disk.

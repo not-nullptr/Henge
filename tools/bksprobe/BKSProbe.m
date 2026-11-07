@@ -39,6 +39,8 @@ static id gObserver;
 static id gObserverToken;
 static NSString *gLogPath;
 static BOOL gStarted;
+static BOOL gRouteCreated;
+static int gGCMouseLogCount;
 static id gGlobalRoute;
 
 static CGPoint gLastGlobal, gLastNormalized;
@@ -283,22 +285,35 @@ static void LogEvent(UIEvent *event)
 {
     static int count = 0;
     if (!gStarted || !event) return;
-    if (count >= 60) return;
-    if (event.type != UIEventTypeHover && event.type != UIEventTypeTouches) return;
+    if (count >= 200) return;
 
-    BOOL interesting = (event.type == UIEventTypeHover);
     NSMutableString *touches = [NSMutableString string];
+    BOOL interesting = (event.type == UIEventTypeHover);
     for (UITouch *t in event.allTouches) {
         if (t.type == UITouchTypeIndirectPointer) interesting = YES;
         [touches appendFormat:@" %ld", (long)t.type];
     }
-    if (!interesting) return;
+
+    // Before the route, only hover / indirect-pointer events matter. After it,
+    // log every event type so we can see what (if anything) arrives.
+    if (!gRouteCreated) {
+        if (event.type != UIEventTypeHover && event.type != UIEventTypeTouches) return;
+        if (!interesting) return;
+    }
 
     count++;
     Show(@"EVENT type=%ld touches=%@", (long)event.type, touches);
 }
 
 @implementation UIWindow (BKSProbeEvents)
+- (void)bks_sendEvent:(UIEvent *)event
+{
+    LogEvent(event);
+    [self bks_sendEvent:event];
+}
+@end
+
+@implementation UIApplication (BKSProbeEvents)
 - (void)bks_sendEvent:(UIEvent *)event
 {
     LogEvent(event);
@@ -315,7 +330,41 @@ static void InstallEventLogger(void)
         Method a = class_getInstanceMethod(UIWindow.class, @selector(sendEvent:));
         Method b = class_getInstanceMethod(UIWindow.class, @selector(bks_sendEvent:));
         if (a && b) method_exchangeImplementations(a, b);
+
+        Method c = class_getInstanceMethod(UIApplication.class, @selector(sendEvent:));
+        Method d = class_getInstanceMethod(UIApplication.class, @selector(bks_sendEvent:));
+        if (c && d) method_exchangeImplementations(c, d);
     });
+}
+
+// Wraps whatever handler the guest already installed, so Henge keeps working
+// and we still see whether deltas start arriving after the route.
+static void InstallGCMouseLogging(void)
+{
+    for (GCMouse *mouse in [GCMouse mice]) {
+        GCMouseInput *input = mouse.mouseInput;
+        if (!input) continue;
+
+        void (^oldMoved)(GCMouseInput *, float, float) = input.mouseMovedHandler;
+        input.mouseMovedHandler = ^(GCMouseInput *m, float dx, float dy) {
+            if (gGCMouseLogCount++ < 40) Show(@"GCMOUSE move %.2f %.2f", dx, dy);
+            if (oldMoved) oldMoved(m, dx, dy);
+        };
+
+        void (^oldLeft)(GCControllerButtonInput *, float, BOOL) = input.leftButton.pressedChangedHandler;
+        input.leftButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL pressed) {
+            if (gGCMouseLogCount++ < 40) Show(@"GCMOUSE left %d", pressed);
+            if (oldLeft) oldLeft(b, v, pressed);
+        };
+
+        void (^oldRight)(GCControllerButtonInput *, float, BOOL) = input.rightButton.pressedChangedHandler;
+        input.rightButton.pressedChangedHandler = ^(GCControllerButtonInput *b, float v, BOOL pressed) {
+            if (gGCMouseLogCount++ < 40) Show(@"GCMOUSE right %d", pressed);
+            if (oldRight) oldRight(b, v, pressed);
+        };
+
+        Show(@"GCMOUSE wrapped %@", mouse.vendorName);
+    }
 }
 
 static id CallRequestGlobalMouseEvents(NSMethodSignature *sig, SEL sel, id display, unsigned int ctx, id options)
@@ -469,6 +518,11 @@ static void RequestGlobalMouseEvents(void)
     }
 
     gGlobalRoute = ret;
+    if (ret) {
+        gRouteCreated = YES;
+        Show(@"ROUTE CREATED — move the mouse and click now");
+        InstallGCMouseLogging();
+    }
 }
 
 #pragma mark - start
