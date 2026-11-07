@@ -1,0 +1,52 @@
+# Builds the BKSProbe diagnostic dylib for LiveContainer's TweakLoader.
+#
+# The probe answers whether BackBoardServices' BKSMousePointerService is
+# reachable from a sandboxed app and whether it sees a mouse on iPhone with
+# AssistiveTouch off. See tools/bksprobe/README.md.
+#
+# Run it from the Actions tab (Build BKSProbe -> Run workflow) or push to
+# ios-cursor; the dylib lands in the run's artifacts.
+
+name: Build BKSProbe
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [ios-cursor]
+    paths:
+      - 'tools/bksprobe/**'
+      - '.github/workflows/build-bksprobe.yml'
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out Henge (this fork)
+        uses: actions/checkout@v4
+
+      - name: Build BKSProbe.dylib
+        run: |
+          set -euxo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          xcrun --sdk iphoneos clang \
+            -arch arm64 \
+            -dynamiclib \
+            -fobjc-arc \
+            -fmodules \
+            -isysroot "$SDK" \
+            -framework Foundation \
+            -framework UIKit \
+            -framework GameController \
+            -framework QuartzCore \
+            -miphoneos-version-min=15.0 \
+            -o BKSProbe.dylib \
+            tools/bksprobe/BKSProbe.m
+
+      - name: Upload BKSProbe.dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: BKSProbe
+          path: BKSProbe.dylib
+          if-no-files-found: error
