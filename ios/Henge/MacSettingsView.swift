@@ -52,6 +52,28 @@ struct MacSettingsView: View {
                 .padding(.vertical, 10)
                 .deskCard()
 
+                DeskHeading("About This Mac")
+                VStack(alignment: .leading, spacing: 12) {
+                    Toggle(isOn: Binding(get: { mac.reportHostIdentity ?? false }, set: {
+                        mac.reportHostIdentity = $0
+                        if !$0 { mac.reportHostModelID = false }
+                        save()
+                    })) {
+                        Text("Report this \(Device.name)").font(.system(size: 16))
+                    }
+                    Text("The Mac says it is \(Device.marketingName)\(Device.chipName.map { " with the \($0) chip" } ?? ""). Changes apply the next time this Mac starts.")
+                        .font(.system(size: 13)).foregroundStyle(Desk.dim)
+                    if mac.reportHostIdentity == true {
+                        Toggle(isOn: Binding(get: { mac.reportHostModelID ?? false }, set: { mac.reportHostModelID = $0; save() })) {
+                            Text("Also report its model identifier").font(.system(size: 16))
+                        }
+                        Text("Experimental. About This Mac may show this \(Device.name)'s icon, but macOS may misread hardware it keys off the model (\(Device.modelIdentifier)).")
+                            .font(.system(size: 13)).foregroundStyle(Desk.dim)
+                    }
+                }
+                .padding(17)
+                .deskCard()
+
                 if Device.fittingScreen.height != 1080 {
                     DeskHeading("Screen")
                     VStack(alignment: .leading, spacing: 12) {

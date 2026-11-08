@@ -526,6 +526,13 @@ struct SessionView: View {
             henge_vm_set_display_mm(0, 0)
         }
         HengeLog.log("session", "screen \(mac.screen.width)x\(mac.screen.height) retina \(mac.isRetina)")
+        if mac.reportHostIdentity == true {
+            henge_vm_set_identity(Device.chipName, Device.marketingName,
+                                  mac.reportHostModelID == true ? Device.modelIdentifier : nil)
+            HengeLog.log("session", "About This Mac reports \(Device.marketingName) (\(Device.modelIdentifier))")
+        } else {
+            henge_vm_set_identity(nil, nil, nil)
+        }
         let rc = henge_vm_boot(mac.rom.path, mac.disk.path, mac.aux.path, mac.ecid, mac.seed, ram, Int32(cpus), &buffer, buffer.count)
         if rc != 0 {
             error = String(cString: buffer)

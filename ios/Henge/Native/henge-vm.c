@@ -22,6 +22,13 @@ HENGE_EXPORT HengeDualMapping *henge_ios_jit_get_mapping(void);
 
 static volatile int state;
 static volatile int exit_reason;
+static char identity_soc[32], identity_name[32], identity_model[32];
+
+void henge_vm_set_identity(const char *soc_name, const char *product_name, const char *model_id) {
+    snprintf(identity_soc, sizeof identity_soc, "%s", soc_name ? soc_name : "");
+    snprintf(identity_name, sizeof identity_name, "%s", product_name ? product_name : "");
+    snprintf(identity_model, sizeof identity_model, "%s", model_id ? model_id : "");
+}
 
 static void on_exit(int reason) {
     exit_reason = reason;
@@ -42,6 +49,9 @@ int henge_vm_boot(const char *rom, const char *disk, const char *aux, uint64_t e
         return -1;
     }
     HvVmConfig c = {.rom = rom, .disk = disk, .aux = aux, .ecid = ecid, .seed = seed, .ram_mb = ram_mb, .ncpus = cpus, .log = 1,
+                    .soc_name = identity_soc[0] ? identity_soc : NULL,
+                    .product_name = identity_name[0] ? identity_name : NULL,
+                    .model_id = identity_model[0] ? identity_model : NULL,
                     .jit_rx = jit->rx_addr, .jit_rw = jit->rw_addr, .jit_bytes = jit->size};
     fprintf(stderr, "henge: booting with %d CPUs, %llu MB RAM, a %zu MB JIT region\n", cpus, (unsigned long long)ram_mb,
             jit->size >> 20);

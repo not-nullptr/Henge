@@ -1,0 +1,170 @@
+/* host/dt_fixup.c: the identity rewrite, on crafted device trees. The blob
+   builder lays out a v17 tree the way the firmware's comes: root `model`,
+   /product/product-name, and neighbours that must not move. */
+#include "dt_fixup.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int failures;
+#define CHECK(cond) do { if (!(cond)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); failures++; } } while (0)
+
+static uint8_t blob[8192];
+static uint32_t spos, stroff, strpos, last_len_off;
+
+static void put32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)v;
+}
+static uint32_t get32(const uint8_t *p) {
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
+static void b_reset(void) {
+    memset(blob, 0, sizeof blob);
+    spos = 40 + 16; /* header, then one empty reservation entry */
+    stroff = 4096;
+    strpos = 0;
+}
+static void b_begin(const char *name) {
+    put32(blob + spos, 1);
+    spos += 4;
+    uint32_t n = (uint32_t)strlen(name) + 1;
+    memcpy(blob + spos, name, n);
+    spos += (n + 3) & ~3u;
+}
+static void b_end(void) {
+    put32(blob + spos, 2);
+    spos += 4;
+}
+static void b_prop(const char *name, const char *value) {
+    uint32_t nameoff = strpos, nn = (uint32_t)strlen(name) + 1;
+    memcpy(blob + stroff + strpos, name, nn);
+    strpos += nn;
+    uint32_t len = (uint32_t)strlen(value) + 1;
+    last_len_off = spos + 4;
+    put32(blob + spos, 3);
+    put32(blob + spos + 4, len);
+    put32(blob + spos + 8, nameoff);
+    memcpy(blob + spos + 12, value, len);
+    spos += 12 + ((len + 3) & ~3u);
+}
+static void b_finish(void) {
+    put32(blob + spos, 9);
+    spos += 4;
+    put32(blob + 0, 0xd00dfeed);
+    put32(blob + 4, stroff + strpos); /* the strings block sits past the struct, inside totalsize */
+    put32(blob + 8, 40 + 16);
+    put32(blob + 12, stroff);
+    put32(blob + 16, 40);
+    put32(blob + 20, 17);
+    put32(blob + 24, 16);
+    put32(blob + 28, 0);
+    put32(blob + 32, strpos);
+    put32(blob + 36, spos - (40 + 16));
+}
+/* The firmware's tree, as far as identity goes. name_off receives the offset of
+   product-name's length field, so the test can check it never moves. */
+static void b_vmapple(const char *product_name, uint32_t *name_len_off) {
+    b_reset();
+    b_begin("");
+    b_prop("model", "VirtualMac2,1");
+    b_prop("compatible", "VMA2MACOSAP");
+    b_begin("product");
+    b_prop("product-name", product_name);
+    if (name_len_off) *name_len_off = last_len_off;
+    b_prop("product-soc-name", "Apple M1 (Virtual)");
+    b_prop("product-description", "virtual machine for ARM-v8.4 with Apple Silicon extensions");
+    b_end();
+    b_begin("chosen");
+    b_prop("boot-args", "");
+    b_end();
+    b_end();
+    b_finish();
+}
+
+static void test_both(void) {
+    uint32_t len_off = 0;
+    b_vmapple("Apple Virtual Machine 1", &len_off);
+    CHECK(hv_dt_fixup_start(blob, sizeof blob, "iPhone 17 Pro", "iPhone18,1") == 1);
+    CHECK(hv_dt_fixup_blob(blob, sizeof blob) == 2);
+    CHECK(memcmp(blob + len_off + 8, "iPhone 17 Pro\0", 14) == 0);
+    CHECK(get32(blob + len_off) == 24);                    /* the property keeps its length */
+    for (uint32_t i = 14; i < 24; i++) CHECK(blob[len_off + 8 + i] == 0); /* NUL-padded */
+    CHECK(!memmem(blob, get32(blob + 4), "Apple Virtual Machine 1", 24));
+    CHECK(!memmem(blob, get32(blob + 4), "VirtualMac2,1", 12));
+    CHECK(memmem(blob, get32(blob + 4), "iPhone18,1", 10));
+    CHECK(memmem(blob, get32(blob + 4), "Apple M1 (Virtual)", 17)); /* the chip is the cfg region's business */
+    CHECK(hv_dt_fixup_blob(blob, sizeof blob) == 0);       /* a second pass changes nothing */
+}
+
+static void test_name_only(void) {
+    b_vmapple("Apple Virtual Machine 1", NULL);
+    CHECK(hv_dt_fixup_start(blob, sizeof blob, "iPhone 17 Pro", NULL) == 1);
+    CHECK(hv_dt_fixup_blob(blob, sizeof blob) == 1);
+    CHECK(memmem(blob, get32(blob + 4), "VirtualMac2,1", 12));
+}
+
+static void test_too_long(void) {
+    uint32_t len_off = 0;
+    b_vmapple("Apple Virtual Machine 1", &len_off);
+    CHECK(hv_dt_fixup_start(blob, sizeof blob, "A name far too long for the slot", NULL) == 0); /* nothing fits: nothing to do */
+    CHECK(hv_dt_fixup_blob(blob, sizeof blob) == 0);
+    CHECK(memcmp(blob + len_off + 8, "Apple Virtual Machine 1", 24) == 0);
+}
+
+static void test_other_tree(void) {
+    b_vmapple("Some Other Machine", NULL);
+    CHECK(hv_dt_fixup_start(blob, sizeof blob, "iPhone 17 Pro", "iPhone18,1") == 1);
+    CHECK(hv_dt_fixup_blob(blob, sizeof blob) == 1); /* the model is stock; the name is not ours to touch */
+    CHECK(memmem(blob, get32(blob + 4), "Some Other Machine", 19));
+}
+
+static void test_garbage(void) {
+    CHECK(hv_dt_fixup_start(blob, sizeof blob, "iPhone 17 Pro", "iPhone18,1") == 1);
+    b_reset();
+    CHECK(hv_dt_fixup_blob(blob, sizeof blob) == 0);       /* all zero */
+    CHECK(hv_dt_fixup_blob(blob, 10) == 0);                /* truncated header */
+    b_vmapple("Apple Virtual Machine 1", NULL);
+    CHECK(hv_dt_fixup_blob(blob, 40) == 0);                /* header only */
+    put32(blob + 4, 0xffffffff);
+    CHECK(hv_dt_fixup_blob(blob, sizeof blob) == 0);       /* totalsize lies */
+    b_vmapple("Apple Virtual Machine 1", NULL);
+    put32(blob + 8, 0xffff0000);
+    CHECK(hv_dt_fixup_blob(blob, sizeof blob) == 0);       /* struct offset lies */
+    b_vmapple("Apple Virtual Machine 1", NULL);
+    put32(blob + (40 + 16) + 4 + 4 + 4, 0xffffff00);         /* first property's length lies (BEGIN_NODE, name "", PROP) */
+    CHECK(hv_dt_fixup_blob(blob, sizeof blob) == 0);
+}
+
+static void test_scan(void) {
+    uint64_t size = 2 << 20;
+    uint8_t *ram = calloc(1, size);
+    CHECK(ram != NULL);
+    if (!ram) return;
+    b_vmapple("Apple Virtual Machine 1", NULL);
+    memcpy(ram + 0x10000, blob, get32(blob + 4));
+    CHECK(hv_dt_fixup_start(ram, size, "iPhone 17 Pro", "iPhone18,1") == 1);
+    hv_dt_fixup_poll(); /* the first pass scans at once */
+    CHECK(memmem(ram, size, "iPhone 17 Pro", 13));
+    CHECK(memmem(ram, size, "iPhone18,1", 10));
+    hv_dt_fixup_poll(); /* throttled: a no-op, and safe */
+    CHECK(hv_dt_fixup_start(ram, size, NULL, NULL) == 0);
+    hv_dt_fixup_poll();
+    free(ram);
+}
+
+int main(void) {
+    test_both();
+    test_name_only();
+    test_too_long();
+    test_other_tree();
+    test_garbage();
+    test_scan();
+    if (failures) fprintf(stderr, "test_dt_fixup: %d failure%s\n", failures, failures == 1 ? "" : "s");
+    else printf("test_dt_fixup: all pass\n");
+    return failures ? 1 : 0;
+}

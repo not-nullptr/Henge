@@ -43,6 +43,12 @@ Based on upstream `main` at b744a78.
   — both: [hungbenjamin402](https://github.com/hungbenjamin402/Henge)
 
 ### New in this fork
+- **About This Mac can report the device Henge runs on**: a per-Mac *About This Mac*
+  setting makes the Mac say it is this iPhone/iPad, with its chip (the config region's
+  SoC name) and its name (a boot-time device-tree fixup, `host/dt_fixup.c` — the
+  firmware hardcodes the title; nothing on disk is patched). An experimental second
+  toggle also reports the device's model identifier, which may bring its icon.
+  CLI: `--soc-name`, `--product-name`, `--model-id`, `--serial`, `--model`.
 - **Performance settings** (Settings → Performance), applied each time a Mac starts:
   - *Mac refresh rate*: 60 Hz by default. Every frame is emulated and replayed, so 120 Hz
     halves the CPU left to apps; 120 Hz stays available.
