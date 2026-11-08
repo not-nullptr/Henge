@@ -93,7 +93,7 @@ static void b_vmapple(const char *product_name, uint32_t *name_len_off) {
 static void test_both(void) {
     uint32_t len_off = 0;
     b_vmapple("Apple Virtual Machine 1", &len_off);
-    CHECK(hv_dt_fixup_start(blob, sizeof blob, "iPhone 17 Pro", "iPhone18,1") == 1);
+    CHECK(hv_dt_fixup_start(blob, sizeof blob, 0, "iPhone 17 Pro", "iPhone18,1") == 1);
     CHECK(hv_dt_fixup_blob(blob, sizeof blob) == 2);
     CHECK(memcmp(blob + len_off + 8, "iPhone 17 Pro\0", 14) == 0);
     CHECK(get32(blob + len_off) == 24);                    /* the property keeps its length */
@@ -107,7 +107,7 @@ static void test_both(void) {
 
 static void test_name_only(void) {
     b_vmapple("Apple Virtual Machine 1", NULL);
-    CHECK(hv_dt_fixup_start(blob, sizeof blob, "iPhone 17 Pro", NULL) == 1);
+    CHECK(hv_dt_fixup_start(blob, sizeof blob, 0, "iPhone 17 Pro", NULL) == 1);
     CHECK(hv_dt_fixup_blob(blob, sizeof blob) == 1);
     CHECK(memmem(blob, get32(blob + 4), "VirtualMac2,1", 12));
 }
@@ -115,20 +115,20 @@ static void test_name_only(void) {
 static void test_too_long(void) {
     uint32_t len_off = 0;
     b_vmapple("Apple Virtual Machine 1", &len_off);
-    CHECK(hv_dt_fixup_start(blob, sizeof blob, "A name far too long for the slot", NULL) == 0); /* nothing fits: nothing to do */
+    CHECK(hv_dt_fixup_start(blob, sizeof blob, 0, "A name far too long for the slot", NULL) == 0); /* nothing fits: nothing to do */
     CHECK(hv_dt_fixup_blob(blob, sizeof blob) == 0);
     CHECK(memcmp(blob + len_off + 8, "Apple Virtual Machine 1", 24) == 0);
 }
 
 static void test_other_tree(void) {
     b_vmapple("Some Other Machine", NULL);
-    CHECK(hv_dt_fixup_start(blob, sizeof blob, "iPhone 17 Pro", "iPhone18,1") == 1);
+    CHECK(hv_dt_fixup_start(blob, sizeof blob, 0, "iPhone 17 Pro", "iPhone18,1") == 1);
     CHECK(hv_dt_fixup_blob(blob, sizeof blob) == 1); /* the model is stock; the name is not ours to touch */
     CHECK(memmem(blob, get32(blob + 4), "Some Other Machine", 19));
 }
 
 static void test_garbage(void) {
-    CHECK(hv_dt_fixup_start(blob, sizeof blob, "iPhone 17 Pro", "iPhone18,1") == 1);
+    CHECK(hv_dt_fixup_start(blob, sizeof blob, 0, "iPhone 17 Pro", "iPhone18,1") == 1);
     b_reset();
     CHECK(hv_dt_fixup_blob(blob, sizeof blob) == 0);       /* all zero */
     CHECK(hv_dt_fixup_blob(blob, 10) == 0);                /* truncated header */
@@ -151,12 +151,12 @@ static void test_scan(void) {
     if (!ram) return;
     b_vmapple("Apple Virtual Machine 1", NULL);
     memcpy(ram + 0x10000, blob, get32(blob + 4));
-    CHECK(hv_dt_fixup_start(ram, size, "iPhone 17 Pro", "iPhone18,1") == 1);
+    CHECK(hv_dt_fixup_start(ram, size, 0, "iPhone 17 Pro", "iPhone18,1") == 1);
     hv_dt_fixup_poll(); /* the first pass scans at once */
     CHECK(memmem(ram, size, "iPhone 17 Pro", 13));
     CHECK(memmem(ram, size, "iPhone18,1", 10));
     hv_dt_fixup_poll(); /* throttled: a no-op, and safe */
-    CHECK(hv_dt_fixup_start(ram, size, NULL, NULL) == 0);
+    CHECK(hv_dt_fixup_start(ram, size, 0, NULL, NULL) == 0);
     hv_dt_fixup_poll();
     free(ram);
 }
@@ -171,7 +171,7 @@ static void test_oversized_slot(void) {
     b_end();
     b_end();
     b_finish();
-    CHECK(hv_dt_fixup_start(blob, sizeof blob, "iPhone 17 Pro", NULL) == 1);
+    CHECK(hv_dt_fixup_start(blob, sizeof blob, 0, "iPhone 17 Pro", NULL) == 1);
     CHECK(hv_dt_fixup_blob(blob, sizeof blob) == 1);
     CHECK(get32(blob + len_off) == 64); /* the slot keeps its size */
     CHECK(memcmp(blob + len_off + 8, "iPhone 17 Pro\0", 14) == 0);
@@ -186,7 +186,7 @@ static void test_final_tree(void) {
     b_vmapple("Apple Virtual Machine 1", NULL);
     uint32_t total = get32(blob + 4);
     memcpy(ram + 0x8000, blob, total);
-    CHECK(hv_dt_fixup_start(ram, size, "iPhone 17 Pro", "iPhone18,1") == 1);
+    CHECK(hv_dt_fixup_start(ram, size, 0, "iPhone 17 Pro", "iPhone18,1") == 1);
     CHECK(hv_dt_fixup_tree(0x8000, total) == 1); /* boot_args named it */
     CHECK(hv_dt_fixup_tree(0, 0) == 1);          /* already held */
     hv_dt_fixup_poll();                          /* patches the final tree at once, no throttle */
@@ -194,7 +194,7 @@ static void test_final_tree(void) {
     CHECK(memmem(ram, size, "iPhone18,1", 10));
     hv_dt_fixup_stop();
     hv_dt_fixup_poll();                          /* inactive: safe */
-    CHECK(hv_dt_fixup_start(ram, size, "iPhone 17 Pro", NULL) == 1);
+    CHECK(hv_dt_fixup_start(ram, size, 0, "iPhone 17 Pro", NULL) == 1);
     CHECK(hv_dt_fixup_tree(0x9000, 100) == 0);   /* no tree at that address */
     free(ram);
 }

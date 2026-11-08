@@ -1,33 +1,38 @@
 #include "dt_fixup.h"
 
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
-/* See dt_fixup.h. While iBoot runs, a pass every 50 ms scans guest RAM for the
-   tree (page-aligned anywhere in the first GB, and 16-byte aligned in the low
-   256 MB where iBoot's heap sits: boot_args lands near 142 MB in, and the tree
-   sits just below it). Separately, vm.c watches for boot_args and hands us the
-   exact tree it names (hv_dt_fixup_tree); from then on that one blob is
-   re-patched every tick, which catches a tree iBoot only finalises at the
-   handoff. The caller stops us when the GPU draws; GIVE_UP is the backstop. */
+/* See dt_fixup.h. A background thread (hv_dt_fixup_run) scans guest RAM while
+   iBoot runs, so a pass over even 8 GB never stalls the guest's CPU. It looks
+   two ways: the tree's magic (page-aligned anywhere, 16-byte aligned in the low
+   heap), and the exact address boot_args names (DeviceTreeP) — the final blob
+   the kernel takes, wherever iBoot put it. Once boot_args names it, that one
+   blob is re-patched every millisecond until the caller stops us at the first
+   GPU frame, by which point the kernel has the tree in its registry. */
 
 #define STOCK_NAME "Apple Virtual Machine 1"
 #define STOCK_MODEL "VirtualMac2,1"
 #define SCAN_WINDOW (256ull << 20)
-#define PAGE_WINDOW (1ull << 30)
 #define SCAN_EVERY 0.05
 #define GIVE_UP 120.0
 
 static uint8_t *ram;
-static uint64_t ram_size;
+static uint64_t ram_size, ram_base;
 static char want_name[32], want_model[32];
-static int active, total_changed, diag;
+static _Atomic int active; /* the scan thread reads it; stop() clears it from the guest thread */
+static int total_changed, diag;
 static double started, last_pass;
 static uint64_t tracked[8];
 static int ntracked;
 static uint64_t final_off, final_len; /* the tree boot_args names, once known */
 static int have_final;
+static uint64_t passes, magic_seen, magic_valid; /* what the scan saw, for the stop summary */
+static int magic_logged, ba_logged;
 
 static double now(void) {
     struct timespec ts;
@@ -124,12 +129,15 @@ int hv_dt_fixup_blob(uint8_t *b, uint64_t avail) {
     return changed;
 }
 
-int hv_dt_fixup_start(uint8_t *r, uint64_t size, const char *product_name, const char *model_id) {
+int hv_dt_fixup_start(uint8_t *r, uint64_t size, uint64_t base, const char *product_name, const char *model_id) {
     ram = r;
     ram_size = size;
+    ram_base = base;
     want_name[0] = want_model[0] = 0;
     active = total_changed = ntracked = have_final = diag = 0;
     final_off = final_len = 0;
+    passes = magic_seen = magic_valid = 0;
+    magic_logged = ba_logged = 0;
     started = last_pass = 0;
     if (!r) return 0;
     if (product_name && *product_name) {
@@ -182,6 +190,77 @@ static void consider(uint64_t off, uint64_t avail) {
     }
 }
 
+/* boot_args names the final tree's exact physical address: DeviceTreeP at +96
+   (q[12]), length at +104 (q[13]); try +88 (q[11]) too in case this revision has
+   no machineType. The magic check decides which is right. */
+static void find_boot_args_tree(void) {
+    if (have_final) return;
+    for (uint64_t off = 0; off + 0x1000 <= ram_size; off += 0x4000) {
+        const uint64_t *q = (const uint64_t *)(ram + off);
+        const uint16_t *h = (const uint16_t *)(ram + off);
+        if (h[0] < 2 || h[0] > 3 || h[1] < 1 || h[1] > 3) continue; /* revision, version */
+        if (q[1] >> 40 != 0xfffffe || q[2] < ram_base || q[2] >= ram_base + ram_size || q[3] == 0 || q[3] > ram_size)
+            continue;
+        if (ba_logged < 3) {
+            ba_logged++;
+            fprintf(stderr, "hengevm: device tree: boot_args at RAM +%llx: q11=%llx q12=%llx q13=%llx\n",
+                    (unsigned long long)off, (unsigned long long)q[11], (unsigned long long)q[12], (unsigned long long)q[13]);
+        }
+        const uint64_t cand[2] = {q[12], q[11]};
+        const uint32_t clen[2] = {(uint32_t)q[13], (uint32_t)q[12]};
+        for (int c = 0; c < 2; c++) {
+            uint64_t dt_pa = cand[c];
+            uint32_t dt_len = clen[c];
+            if (dt_pa < ram_base || dt_pa - ram_base + 40 > ram_size || dt_len < 40 || dt_len > (1u << 20) ||
+                dt_pa - ram_base + dt_len > ram_size) continue;
+            uint64_t dt_off = dt_pa - ram_base;
+            const uint8_t *dt = ram + dt_off;
+            if (dt[0] == 0xd0 && dt[1] == 0x0d && dt[2] == 0xfe && dt[3] == 0xed) {
+                hv_dt_fixup_tree(dt_off, dt_len);
+                return;
+            }
+        }
+    }
+}
+
+/* One scan pass. Runs on the background thread (or, in tests, inline). */
+static void scan_pass(void) {
+    passes++;
+    /* Trees already found may have had a value put back. */
+    for (int i = 0; i < ntracked; i++) {
+        if (tracked[i] + 40 > ram_size || !is_dtb(ram + tracked[i], ram_size - tracked[i])) continue;
+        int n = hv_dt_fixup_blob(ram + tracked[i], ram_size - tracked[i]);
+        if (n) {
+            fprintf(stderr, "hengevm: device tree at RAM +%llx: rewrote %d string%s again\n",
+                    (unsigned long long)tracked[i], n, n == 1 ? "" : "s");
+            total_changed += n;
+        }
+    }
+    /* Page-aligned trees anywhere in RAM: iBoot may load the tree high. */
+    for (uint64_t off = 0; off + 40 <= ram_size; off += 0x1000) {
+        const uint8_t *b = ram + off;
+        if (b[0] != 0xd0 || b[1] != 0x0d || b[2] != 0xfe || b[3] != 0xed) continue;
+        magic_seen++;
+        if (!is_dtb(b, ram_size - off)) {
+            if (magic_logged < 5) {
+                magic_logged++;
+                fprintf(stderr, "hengevm: device tree: magic at RAM +%llx, header rejected (ver %u, total %u, struct@%u, strings@%u)\n",
+                        (unsigned long long)off, be32(b + 20), be32(b + 4), be32(b + 8), be32(b + 12));
+            }
+            continue;
+        }
+        magic_valid++;
+        consider(off, ram_size - off);
+    }
+    /* Finer: iBoot's heap allocations are 16-byte aligned, not always page-aligned. */
+    uint64_t limit = ram_size < SCAN_WINDOW ? ram_size : SCAN_WINDOW;
+    for (uint64_t off = 0; off + 40 <= limit; off += 16) {
+        const uint8_t *b = ram + off;
+        if (b[0] == 0xd0 && b[1] == 0x0d && b[2] == 0xfe && b[3] == 0xed) consider(off, limit - off);
+    }
+    find_boot_args_tree();
+}
+
 void hv_dt_fixup_poll(void) {
     if (!active) return;
     double t = now();
@@ -190,8 +269,7 @@ void hv_dt_fixup_poll(void) {
         active = 0;
         return;
     }
-    /* The final tree, once boot_args has named it: every tick, no throttle.
-       This is the blob the kernel takes; re-patching catches a late rebuild. */
+    /* The final tree, once boot_args has named it: re-patch at once, no throttle. */
     if (have_final) {
         int n = hv_dt_fixup_blob(ram + final_off, final_len);
         if (n) {
@@ -203,36 +281,27 @@ void hv_dt_fixup_poll(void) {
     }
     if (t - last_pass < SCAN_EVERY) return;
     last_pass = t;
-    /* Trees already found may have had a value put back. */
-    for (int i = 0; i < ntracked; i++) {
-        if (tracked[i] + 40 > ram_size || !is_dtb(ram + tracked[i], ram_size - tracked[i])) continue;
-        int n = hv_dt_fixup_blob(ram + tracked[i], ram_size - tracked[i]);
-        if (n) {
-            fprintf(stderr, "hengevm: device tree at RAM +%llx: rewrote %d string%s again\n",
-                    (unsigned long long)tracked[i], n, n == 1 ? "" : "s");
-            total_changed += n;
-        }
+    scan_pass();
+}
+
+static void *scan_thread(void *arg) {
+    (void)arg;
+    while (active) {
+        hv_dt_fixup_poll();
+        usleep(1000);
     }
-    /* Page-aligned trees anywhere in the first GB (the tree sits below boot_args). */
-    uint64_t page_limit = ram_size < PAGE_WINDOW ? ram_size : PAGE_WINDOW;
-    for (uint64_t off = 0; off + 40 <= page_limit; off += 0x1000) {
-        const uint8_t *b = ram + off;
-        if (b[0] == 0xd0 && b[1] == 0x0d && b[2] == 0xfe && b[3] == 0xed) consider(off, page_limit - off);
-    }
-    /* Finer: iBoot's heap allocations are 16-byte aligned, not always page-aligned. */
-    uint64_t limit = ram_size < SCAN_WINDOW ? ram_size : SCAN_WINDOW;
-    for (uint64_t off = 0; off + 40 <= limit; off += 16) {
-        const uint8_t *b = ram + off;
-        if (b[0] == 0xd0 && b[1] == 0x0d && b[2] == 0xfe && b[3] == 0xed) consider(off, limit - off);
-    }
+    return NULL;
+}
+
+void hv_dt_fixup_run(void) {
+    pthread_t t;
+    if (pthread_create(&t, NULL, scan_thread, NULL) == 0) pthread_detach(t);
 }
 
 void hv_dt_fixup_stop(void) {
     if (!active) return;
-    if (total_changed)
-        fprintf(stderr, "hengevm: device tree: the GPU drew; %d string%s rewritten\n", total_changed,
-                total_changed == 1 ? "" : "s");
-    else
-        fprintf(stderr, "hengevm: device tree: the GPU drew; no tree was rewritten, the guest keeps its own name\n");
+    fprintf(stderr, "hengevm: device tree: the GPU drew after %llu passes (%llu tree magic seen, %llu valid); %d string%s rewritten%s\n",
+            (unsigned long long)passes, (unsigned long long)magic_seen, (unsigned long long)magic_valid,
+            total_changed, total_changed == 1 ? "" : "s", total_changed ? "" : ", the guest keeps its own name");
     active = 0;
 }

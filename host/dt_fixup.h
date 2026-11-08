@@ -19,9 +19,12 @@
    catches a tree iBoot only finalises at the handoff. */
 
 /* Copies the strings (NULL or empty: leave that one alone). Returns 1 if there
-   is anything to do. ram is the guest's RAM, which the poll reads and writes. */
-int hv_dt_fixup_start(uint8_t *ram, uint64_t ram_size, const char *product_name, const char *model_id);
-/* CPU 0's thread, each tick: scans while iBoot runs. */
+   is anything to do. ram is the guest's RAM (ram_base its physical base, for
+   reading boot_args pointers), which the scan reads and writes. */
+int hv_dt_fixup_start(uint8_t *ram, uint64_t ram_size, uint64_t ram_base, const char *product_name, const char *model_id);
+/* Start the background scan thread (does not stall the guest's CPU). */
+void hv_dt_fixup_run(void);
+/* One synchronous pass (tests; the thread calls this too). */
 void hv_dt_fixup_poll(void);
 /* The exact tree boot_args names, as a RAM offset and length: the final blob
    iBoot hands the kernel. Re-patched every poll until hv_dt_fixup_stop.
