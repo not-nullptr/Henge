@@ -190,9 +190,16 @@ static void consider(uint64_t off, uint64_t avail) {
     }
 }
 
-/* boot_args names the final tree's exact physical address: DeviceTreeP at +96
-   (q[12]), length at +104 (q[13]); try +88 (q[11]) too in case this revision has
-   no machineType. The magic check decides which is right. */
+/* boot_args names the final tree's exact address: DeviceTreeP at +96 (q[12]),
+   length at +104 (q[13]); try +88 (q[11]) too in case this revision has no
+   machineType. DeviceTreeP is a kASLR-slid VIRTUAL address (0xfffffe…): physical
+   is vaddr - virt_base + phys_base, as m1n1's boot protocol documents. The magic
+   check decides which candidate is right. */
+static uint64_t dt_phys(uint64_t v, uint64_t virt_base, uint64_t phys_base) {
+    if (v >> 40 == 0xfffffe && virt_base) return v - virt_base + phys_base;
+    return v; /* already physical */
+}
+
 static void find_boot_args_tree(void) {
     if (have_final) return;
     for (uint64_t off = 0; off + 0x1000 <= ram_size; off += 0x4000) {
@@ -203,13 +210,20 @@ static void find_boot_args_tree(void) {
             continue;
         if (ba_logged < 3) {
             ba_logged++;
-            fprintf(stderr, "hengevm: device tree: boot_args at RAM +%llx: q11=%llx q12=%llx q13=%llx\n",
-                    (unsigned long long)off, (unsigned long long)q[11], (unsigned long long)q[12], (unsigned long long)q[13]);
+            uint64_t pa = dt_phys(q[12], q[1], q[2]);
+            fprintf(stderr, "hengevm: device tree: boot_args at RAM +%llx: virt_base=%llx phys_base=%llx devtree=%llx -> phys %llx, len %u\n",
+                    (unsigned long long)off, (unsigned long long)q[1], (unsigned long long)q[2],
+                    (unsigned long long)q[12], (unsigned long long)pa, (uint32_t)q[13]);
+            if (pa >= ram_base && pa - ram_base + 16 <= ram_size) {
+                const uint8_t *d = ram + (pa - ram_base);
+                fprintf(stderr, "hengevm: device tree:   bytes at the tree: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                        d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+            }
         }
         const uint64_t cand[2] = {q[12], q[11]};
         const uint32_t clen[2] = {(uint32_t)q[13], (uint32_t)q[12]};
         for (int c = 0; c < 2; c++) {
-            uint64_t dt_pa = cand[c];
+            uint64_t dt_pa = dt_phys(cand[c], q[1], q[2]);
             uint32_t dt_len = clen[c];
             if (dt_pa < ram_base || dt_pa - ram_base + 40 > ram_size || dt_len < 40 || dt_len > (1u << 20) ||
                 dt_pa - ram_base + dt_len > ram_size) continue;
