@@ -13,14 +13,23 @@
    two strings in guest RAM the same way. Nothing on disk changes.
 
    The window is iBoot's run: once the kernel has copied the tree into the
-   IORegistry, editing the blob no longer reaches userspace. */
+   IORegistry, editing the blob no longer reaches userspace. Two ways in: a
+   magic scan of guest RAM early on, and — precise — the exact tree boot_args
+   names (hv_dt_fixup_tree), re-patched every tick until the GPU draws, which
+   catches a tree iBoot only finalises at the handoff. */
 
 /* Copies the strings (NULL or empty: leave that one alone). Returns 1 if there
    is anything to do. ram is the guest's RAM, which the poll reads and writes. */
 int hv_dt_fixup_start(uint8_t *ram, uint64_t ram_size, const char *product_name, const char *model_id);
-/* CPU 0's thread, each tick: scans while iBoot runs. Stop calling once the
-   guest's GPU has drawn (the kernel has the tree in its registry by then). */
+/* CPU 0's thread, each tick: scans while iBoot runs. */
 void hv_dt_fixup_poll(void);
+/* The exact tree boot_args names, as a RAM offset and length: the final blob
+   iBoot hands the kernel. Re-patched every poll until hv_dt_fixup_stop.
+   Returns 1 if it took the address (a valid tree is there). */
+int hv_dt_fixup_tree(uint64_t offset, uint64_t len);
+/* The guest's GPU has drawn: the kernel has the tree in its registry now.
+   Logs what became of the rewrite. */
+void hv_dt_fixup_stop(void);
 /* Rewrites one blob in place; returns how many strings changed. (Also tests.) */
 int hv_dt_fixup_blob(uint8_t *blob, uint64_t avail);
 

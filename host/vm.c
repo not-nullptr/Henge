@@ -107,14 +107,54 @@ const char *hv_vm_reason_name(int r) {
     }
 }
 
+/* While the identity fixup runs, find boot_args and hand the fixup the exact
+   device tree it names: DeviceTreeP at +96 (q[12]), its length at +104 (q[13]).
+   That is the final blob the kernel takes, wherever iBoot put it — surer than
+   the magic scan, and it catches a tree iBoot only finalises at the handoff.
+   boot_args sits low in RAM (near 142 MB in), so the first GB is enough. */
+static void dt_find_final_tree(void) {
+    static double last;
+    static int handed;
+    if (handed) return;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    double t = (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+    if (t - last < 0.01) return;
+    last = t;
+    uint8_t *ram = board.ram;
+    uint64_t size = board.ram_size;
+    if (!ram) return;
+    uint64_t limit = size < (1ull << 30) ? size : 1ull << 30;
+    for (uint64_t off = 0; off + 0x1000 <= limit; off += 0x4000) {
+        const uint64_t *q = (const uint64_t *)(ram + off);
+        const uint16_t *h = (const uint16_t *)(ram + off);
+        if (h[0] < 2 || h[0] > 3 || h[1] < 1 || h[1] > 3) continue; /* boot_args: revision, version */
+        if (q[1] >> 40 != 0xfffffe || q[2] < VMAPPLE_MEM || q[2] >= VMAPPLE_MEM + size || q[3] == 0 || q[3] > size) continue;
+        uint64_t dt_pa = q[12];
+        uint32_t dt_len = (uint32_t)q[13];
+        if (dt_pa < VMAPPLE_MEM || dt_pa - VMAPPLE_MEM + 40 > size || dt_len < 40 || dt_len > (1u << 20) ||
+            dt_pa - VMAPPLE_MEM + dt_len > size) continue;
+        uint64_t dt_off = dt_pa - VMAPPLE_MEM;
+        const uint8_t *dt = ram + dt_off;
+        if (dt[0] != 0xd0 || dt[1] != 0x0d || dt[2] != 0xfe || dt[3] != 0xed) continue;
+        if (hv_dt_fixup_tree(dt_off, dt_len)) handed = 1;
+        return;
+    }
+}
+
 /* Host-side device work on CPU 0's thread each tick. */
 static void board_poll(void) {
     if (extra_poll) extra_poll();
     if (dt_fixup_on) {
         /* Once the guest's GPU has drawn, the kernel has long taken the tree
            into its registry: editing the blob no longer reaches About. */
-        if (hv_vm_gpu_frames() > 0) dt_fixup_on = 0;
-        else hv_dt_fixup_poll();
+        if (hv_vm_gpu_frames() > 0) {
+            hv_dt_fixup_stop();
+            dt_fixup_on = 0;
+        } else {
+            dt_find_final_tree();
+            hv_dt_fixup_poll();
+        }
     }
     if (net_on) hv_net_poll();
 }

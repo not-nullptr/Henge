@@ -77,8 +77,10 @@ and the root `model` (`VirtualMac2,1`, `hw.model`). When a Mac reports its host
 `host/dt_fixup.c` rewrites those two in guest RAM while iBoot runs: iBoot verifies
 the tree once at load and then fixes it up in place itself (serial, MACs, memory —
 the firmware's placeholders are sized for that), so the kernel takes the edited
-tree as it takes iBoot's own fixups. Nothing on disk changes. The scan stops once
-the guest's GPU has drawn, by which point the kernel has the tree in its registry.
+tree as it takes iBoot's own fixups. Nothing on disk changes. The tree is found by
+a magic scan of RAM and, precisely, by the address `boot_args` names (`DeviceTreeP`),
+re-patched every tick until the guest's GPU has drawn — by then the kernel has the
+tree in its registry.
 The model identifier is opt-in and experimental: macOS keys some hardware
 decisions off `hw.model`, and the About artwork may follow it.
 
