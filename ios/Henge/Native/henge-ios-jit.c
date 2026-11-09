@@ -474,14 +474,17 @@ static HengeDualMapping henge_self_dual_mapping(size_t bytes)
 #define HENGE_JIT_HOLD_BYTES ((size_t)3 << 29) /* the largest JITBootstrap.jitBytes (1.5 GB); a 1 GB region takes part of the hole */
 __attribute__((used, aligned(16384))) static uint8_t g_jit_reserve[HENGE_JIT_HOLD_BYTES + (16u << 10)];
 static bool g_jit_reserve_released;
+static bool g_reserve_above_limit; /* the block meant to make the hole could not: it is above the limit itself */
 
 /* Give the reserved block back for the debugger's allocation, if it is the size asked for. */
 static void henge_ios_jit_release_low_hold(size_t bytes)
 {
     if (g_jit_reserve_released || bytes > HENGE_JIT_HOLD_BYTES) return;
     vm_address_t start = ((vm_address_t)g_jit_reserve + 16383) & ~(vm_address_t)16383;
+    g_reserve_above_limit = (uint64_t)start >= HENGE_JIT_LOW_LIMIT;
     kern_return_t kr = vm_deallocate(mach_task_self(), start, HENGE_JIT_HOLD_BYTES);
-    HENGE_LOG("released the reserved block at %#lx for the JIT region: %s", (unsigned long)start, mach_error_string(kr));
+    HENGE_LOG("released the reserved block at %#lx for the JIT region: %s%s", (unsigned long)start, mach_error_string(kr),
+              g_reserve_above_limit ? " -- but it is above the low limit, so the hole it makes is not one generated code can use" : "");
     g_jit_reserve_released = true;
 }
 
@@ -678,7 +681,12 @@ static HengeDualMapping henge_ios_jit_allocate_real(size_t bytes)
     if (rx != NULL && (uint64_t)(uintptr_t)rx + bytes > HENGE_JIT_LOW_LIMIT) {
         /* Calling into it would hang the app with the debugger still attached. */
         HENGE_LOG("#%llu: the JIT region came back at %p, above %#llx where generated code does not run; "
-                  "giving it back. Quit Henge and open it again.", (unsigned long long)n, rx, HENGE_JIT_LOW_LIMIT);
+                  "giving it back.%s Quit Henge and open it again.", (unsigned long long)n, rx, HENGE_JIT_LOW_LIMIT,
+                  g_reserve_above_limit
+                      ? " The block reserved for it was itself above that limit, so there is no room below it for a "
+                        "region this size on this signing: extended-virtual-addressing is what gives it, and without "
+                        "that entitlement the largest hole below the limit is about 1080 MiB."
+                      : "");
         vm_deallocate(mach_task_self(), (vm_address_t)rx, bytes);
         return region;
     }
