@@ -147,6 +147,10 @@ enum { OBJ_BUFFER = 1, OBJ_TEXTURE = 2, OBJ_FUNCTION = 6, OBJ_SERIALIZED = 7, OB
     _Atomic uint64_t last_present_ns;
     _Atomic uint64_t gap_max_ns;     /* the longest interval since the reset: the ring only holds the last few seconds */
     _Atomic uint64_t gap_slow;       /* intervals over 50 ms since the reset: how often it stalled */
+    _Atomic uint64_t gap_max_blocks; /* guest blocks that ran during that longest interval */
+    _Atomic uint64_t gap_max_at_ns;  /* when it ended, from the reset */
+    _Atomic uint64_t last_present_blocks; /* guest blocks at the last presented frame */
+    _Atomic uint64_t reset_ns;
     /* Work the GPU has not finished. Stamps are given back in the order they came: the
        GPU's completion handlers run in the order of commit. */
     _Atomic int inflight;
@@ -2375,12 +2379,20 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
             /* The interval from the frame before: what "it stutters" is, as a number. */
             uint64_t now_ns = clock_gettime_nsec_np(CLOCK_MONOTONIC);
             uint64_t before = atomic_exchange(&last_present_ns, now_ns);
+            uint64_t blocks_now = hv_pvg_lite_guest_blocks(lite);
+            uint64_t blocks_before = atomic_exchange(&last_present_blocks, blocks_now);
             if (before) {
                 uint64_t gap = now_ns - before;
                 uint64_t head = atomic_fetch_add(&gap_head, 1) % 1024;
                 atomic_store(&gaps_ns[head], gap);
                 if (atomic_load(&gap_n) < 1024) atomic_fetch_add(&gap_n, 1);
-                if (gap > atomic_load(&gap_max_ns)) atomic_store(&gap_max_ns, gap);
+                if (gap > atomic_load(&gap_max_ns)) {
+                    atomic_store(&gap_max_ns, gap);
+                    /* How much the guest got done while the screen showed nothing: a stall if it
+                       was running, an idle screen if it was not. */
+                    atomic_store(&gap_max_blocks, blocks_now - blocks_before);
+                    atomic_store(&gap_max_at_ns, now_ns - atomic_load(&reset_ns));
+                }
                 if (gap > 50ull * 1000000) atomic_fetch_add(&gap_slow, 1);
             }
         } else {
@@ -2616,12 +2628,18 @@ void hv_pvg_metal_stats(HvPvgMetal *m, HvPvgStats *out, int reset) {
        about 17 seconds, and a mark can run for a minute. */
     out->slow_gaps = atomic_load(&r->gap_slow);
     out->gap_max = (double)atomic_load(&r->gap_max_ns) / 1e9;
+    out->gap_max_blocks = atomic_load(&r->gap_max_blocks);
+    out->gap_max_at = (double)atomic_load(&r->gap_max_at_ns) / 1e9;
     if (reset) {
         atomic_store(&r->gap_n, 0);
         atomic_store(&r->gap_head, 0);
         atomic_store(&r->last_present_ns, 0); /* the gap across a reset is not a frame time */
         atomic_store(&r->gap_max_ns, 0);
         atomic_store(&r->gap_slow, 0);
+        atomic_store(&r->gap_max_blocks, 0);
+        atomic_store(&r->gap_max_at_ns, 0);
+        atomic_store(&r->reset_ns, clock_gettime_nsec_np(CLOCK_MONOTONIC));
+        atomic_store(&r->last_present_blocks, hv_pvg_lite_guest_blocks(r->lite));
         atomic_store(&r->inflight_peak, out->inflight);
     }
     out->gaps = n;

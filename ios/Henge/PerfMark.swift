@@ -117,8 +117,10 @@ final class PerfMark: ObservableObject {
                    + "waiting for a drawable \(duration(drawable)) s (\(share(drawable, seconds)))")
         if b.gpu_gaps > 0 {
             out.append("frame gaps: p50 \(interval(b.gpu_gap_p50)), p95 \(interval(b.gpu_gap_p95)), "
-                       + "max \(interval(b.gpu_gap_max)) over \(b.gpu_gaps) frames, "
-                       + "\(b.gpu_slow_gaps) over 50 ms")
+                       + "\(b.gpu_slow_gaps) over 50 ms, over \(b.gpu_gaps) frames")
+            // Whether the longest gap was a stall or a still screen: the guest's CPUs say which.
+            out.append("longest gap: \(interval(b.gpu_gap_max)) at +\(duration(b.gpu_gap_max_at)) s, "
+                       + "with \(number(Double(b.gpu_gap_max_blocks))) guest blocks run during it")
         } else {
             out.append("frame gaps: no frame was presented in this window")
         }

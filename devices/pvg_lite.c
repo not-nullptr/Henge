@@ -393,6 +393,10 @@ uint64_t hv_pvg_lite_gpu_frames(HvPvgLite *p) {
     return p && p->metal ? hv_pvg_metal_gpu_frames(p->metal) : 0;
 }
 
+uint64_t hv_pvg_lite_guest_blocks(HvPvgLite *p) {
+    return p && p->m ? p->m->stats.blocks : 0;
+}
+
 void hv_pvg_lite_stats(HvPvgLite *p, HvPvgStats *out, int reset) {
     if (p && p->metal) hv_pvg_metal_stats(p->metal, out, reset);
     else memset(out, 0, sizeof *out);

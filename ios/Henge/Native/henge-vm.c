@@ -203,6 +203,8 @@ int henge_vm_perf(HengePerf *out, int reset_gaps) {
     out->gpu_drawable_wait_us = g.drawable_wait_us;
     out->gpu_gaps = g.gaps;
     out->gpu_slow_gaps = g.slow_gaps;
+    out->gpu_gap_max_blocks = g.gap_max_blocks;
+    out->gpu_gap_max_at = g.gap_max_at;
     out->gpu_gap_p50 = g.gap_p50;
     out->gpu_gap_p95 = g.gap_p95;
     out->gpu_gap_max = g.gap_max;

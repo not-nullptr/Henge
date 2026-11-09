@@ -44,6 +44,8 @@ typedef struct HvPvgStats {
     uint64_t encode_us, wait_us, present_us, drawable_wait_us;
     uint32_t gaps;          /* frame intervals recorded since the last reset */
     uint64_t slow_gaps;     /* of them, longer than 50 ms */
+    uint64_t gap_max_blocks; /* guest blocks the CPUs entered during the longest gap */
+    double gap_max_at;      /* seconds into the window when that gap ended */
     double gap_p50, gap_p95, gap_max; /* seconds; gap_max is the whole window's, not just the ring's */
 } HvPvgStats;
 void hv_pvg_metal_stats(HvPvgMetal *m, HvPvgStats *out, int reset);
@@ -51,6 +53,9 @@ void hv_pvg_lite_stats(HvPvgLite *p, HvPvgStats *out, int reset);
 void hv_pvg_lite_task_pages(HvPvgLite *p, uint32_t task, uint64_t first, uint64_t n, uint32_t *out);
 void hv_pvg_lite_set_layer(HvPvgLite *p, void *layer);
 uint64_t hv_pvg_lite_gpu_frames(HvPvgLite *p);
+/* Blocks the guest's CPUs have entered: what a frame gap is measured against, to tell a stall
+   (the guest was running and not drawing) from an idle screen (nothing was happening at all). */
+uint64_t hv_pvg_lite_guest_blocks(HvPvgLite *p);
 void hv_pvg_lite_barrier_stats(HvPvgLite *p, uint64_t out[4]);
 /* The display's shared state page, or NULL before the guest named it. */
 uint8_t *hv_pvg_lite_display_page(HvPvgLite *p);
