@@ -63,86 +63,17 @@ enum Device {
     static let chipTooOldText = "macOS won't run on this \(name). Henge needs an A14 or M1 chip or newer."
 
     /// What this device is called and the chip it has, for a Mac that reports its host
-    /// (MacSettingsView → About This Mac). Names fit the firmware's 23-character
-    /// product-name slot, so generation-numbered devices use their chip instead
-    /// ("iPad Pro 11-inch (M1)"). Anything newer than the table reports its identifier
-    /// and keeps the guest's own chip. Sources: Apple's device lists, AppleDB.
+    /// (MacSettingsView → About This Mac). The table and the icon-snapping live in
+    /// DeviceIdentity.swift (pure Foundation, so the Mac tests can compile it).
     static var modelIdentifier: String { HengeLog.deviceModel }
-    static var marketingName: String { hostIdentity?.name ?? modelIdentifier }
-    static var chipName: String? { hostIdentity?.chip }
+    static var marketingName: String { DeviceIdentity.name(modelIdentifier) }
+    static var chipName: String? { DeviceIdentity.chip(modelIdentifier) }
 
-    private static let hostIdentity: (name: String, chip: String)? = {
-        let table: [String: (name: String, chip: String)] = [
-            "iPhone13,1": ("iPhone 12 mini", "Apple A14"),
-            "iPhone13,2": ("iPhone 12", "Apple A14"),
-            "iPhone13,3": ("iPhone 12 Pro", "Apple A14"),
-            "iPhone13,4": ("iPhone 12 Pro Max", "Apple A14"),
-            "iPhone14,2": ("iPhone 13 Pro", "Apple A15"),
-            "iPhone14,3": ("iPhone 13 Pro Max", "Apple A15"),
-            "iPhone14,4": ("iPhone 13 mini", "Apple A15"),
-            "iPhone14,5": ("iPhone 13", "Apple A15"),
-            "iPhone14,6": ("iPhone SE (A15)", "Apple A15"),
-            "iPhone14,7": ("iPhone 14", "Apple A15"),
-            "iPhone14,8": ("iPhone 14 Plus", "Apple A15"),
-            "iPhone15,2": ("iPhone 14 Pro", "Apple A16"),
-            "iPhone15,3": ("iPhone 14 Pro Max", "Apple A16"),
-            "iPhone15,4": ("iPhone 15", "Apple A16"),
-            "iPhone15,5": ("iPhone 15 Plus", "Apple A16"),
-            "iPhone16,1": ("iPhone 15 Pro", "Apple A17 Pro"),
-            "iPhone16,2": ("iPhone 15 Pro Max", "Apple A17 Pro"),
-            "iPhone17,1": ("iPhone 16 Pro", "Apple A18 Pro"),
-            "iPhone17,2": ("iPhone 16 Pro Max", "Apple A18 Pro"),
-            "iPhone17,3": ("iPhone 16", "Apple A18"),
-            "iPhone17,4": ("iPhone 16 Plus", "Apple A18"),
-            "iPhone17,5": ("iPhone 16e", "Apple A18"),
-            "iPhone18,1": ("iPhone 17 Pro", "Apple A19 Pro"),
-            "iPhone18,2": ("iPhone 17 Pro Max", "Apple A19 Pro"),
-            "iPhone18,3": ("iPhone 17", "Apple A19"),
-            "iPhone18,4": ("iPhone Air", "Apple A19 Pro"),
-            "iPhone18,5": ("iPhone 17e", "Apple A19"),
-            "iPhone19,2": ("iPhone 18 Pro", "Apple A20 Pro"),
-            "iPhone19,3": ("iPhone 18 Pro Max", "Apple A20 Pro"),
-            "iPhone19,7": ("iPhone 18 Pro Max", "Apple A20 Pro"),
-            "iPhone19,4": ("iPhone Duo", "Apple A20 Pro"),
-            "iPad13,1": ("iPad Air (A14)", "Apple A14"),
-            "iPad13,2": ("iPad Air (A14)", "Apple A14"),
-            "iPad13,4": ("iPad Pro 11-inch (M1)", "Apple M1"),
-            "iPad13,5": ("iPad Pro 11-inch (M1)", "Apple M1"),
-            "iPad13,6": ("iPad Pro 11-inch (M1)", "Apple M1"),
-            "iPad13,7": ("iPad Pro 11-inch (M1)", "Apple M1"),
-            "iPad13,8": ("iPad Pro 12.9-inch (M1)", "Apple M1"),
-            "iPad13,9": ("iPad Pro 12.9-inch (M1)", "Apple M1"),
-            "iPad13,10": ("iPad Pro 12.9-inch (M1)", "Apple M1"),
-            "iPad13,11": ("iPad Pro 12.9-inch (M1)", "Apple M1"),
-            "iPad13,16": ("iPad Air (M1)", "Apple M1"),
-            "iPad13,17": ("iPad Air (M1)", "Apple M1"),
-            "iPad13,18": ("iPad (10th generation)", "Apple A14"),
-            "iPad13,19": ("iPad (10th generation)", "Apple A14"),
-            "iPad14,1": ("iPad mini (A15)", "Apple A15"),
-            "iPad14,2": ("iPad mini (A15)", "Apple A15"),
-            "iPad14,3": ("iPad Pro 11-inch (M2)", "Apple M2"),
-            "iPad14,4": ("iPad Pro 11-inch (M2)", "Apple M2"),
-            "iPad14,5": ("iPad Pro 12.9-inch (M2)", "Apple M2"),
-            "iPad14,6": ("iPad Pro 12.9-inch (M2)", "Apple M2"),
-            "iPad14,8": ("iPad Air 11-inch (M2)", "Apple M2"),
-            "iPad14,9": ("iPad Air 11-inch (M2)", "Apple M2"),
-            "iPad14,10": ("iPad Air 13-inch (M2)", "Apple M2"),
-            "iPad14,11": ("iPad Air 13-inch (M2)", "Apple M2"),
-            "iPad15,3": ("iPad Air 11-inch (M3)", "Apple M3"),
-            "iPad15,4": ("iPad Air 11-inch (M3)", "Apple M3"),
-            "iPad15,5": ("iPad Air 13-inch (M3)", "Apple M3"),
-            "iPad15,6": ("iPad Air 13-inch (M3)", "Apple M3"),
-            "iPad15,7": ("iPad (A16)", "Apple A16"),
-            "iPad15,8": ("iPad (A16)", "Apple A16"),
-            "iPad16,1": ("iPad mini (A17 Pro)", "Apple A17 Pro"),
-            "iPad16,2": ("iPad mini (A17 Pro)", "Apple A17 Pro"),
-            "iPad16,3": ("iPad Pro 11-inch (M4)", "Apple M4"),
-            "iPad16,4": ("iPad Pro 11-inch (M4)", "Apple M4"),
-            "iPad16,5": ("iPad Pro 13-inch (M4)", "Apple M4"),
-            "iPad16,6": ("iPad Pro 13-inch (M4)", "Apple M4"),
-        ]
-        return table[modelIdentifier]
-    }()
+    /// The model identifier to report for a matching icon: the real one when the guest
+    /// macOS knows it, else the newest equivalent it recognises (see DeviceIdentity).
+    static func snappedModelIdentifier(forOS osName: String?) -> String {
+        DeviceIdentity.snappedIdentifier(modelIdentifier, forOS: osName)
+    }
 }
 
 /// A keyboard attached to the device. iOS reports each key going down and coming up by its HID usage,

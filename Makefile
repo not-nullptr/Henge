@@ -198,3 +198,11 @@ $(B)/test_jit_advice: ios/Henge/JIT/JITNetworkAdvice.swift tests/test_jit_advice
 test-jit-advice: $(B)/test_jit_advice
 	$(B)/test_jit_advice
 .PHONY: test-jit-advice
+
+# The host identity table and the icon-snapping for the guest's About This Mac.
+$(B)/test_device_identity: ios/Henge/DeviceIdentity.swift tests/test_device_identity.swift | $(B)
+	xcrun --sdk macosx swiftc $^ -o $@
+
+test-identity: $(B)/test_device_identity
+	$(B)/test_device_identity
+.PHONY: test-identity

@@ -65,9 +65,9 @@ struct MacSettingsView: View {
                         .font(.system(size: 13)).foregroundStyle(Desk.dim)
                     if mac.reportHostIdentity == true {
                         Toggle(isOn: Binding(get: { mac.reportHostModelID ?? false }, set: { mac.reportHostModelID = $0; save() })) {
-                            Text("Also report its model identifier").font(.system(size: 16))
+                            Text("Also report a model identifier").font(.system(size: 16))
                         }
-                        Text("Experimental. About This Mac may show this \(Device.name)'s icon, but macOS may misread hardware it keys off the model (\(Device.modelIdentifier)).")
+                        Text("Reports \(Device.snappedModelIdentifier(forOS: mac.osName)) so this Mac shows a matching icon; the name stays \(Device.marketingName). Snaps to the newest \(Device.name) this macOS recognises. Experimental: macOS keys some hardware decisions off the model.")
                             .font(.system(size: 13)).foregroundStyle(Desk.dim)
                     }
                 }

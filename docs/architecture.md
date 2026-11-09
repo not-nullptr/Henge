@@ -78,11 +78,15 @@ and the root `model` (`VirtualMac2,1`, `hw.model`). When a Mac reports its host
 the tree once at load and then fixes it up in place itself (serial, MACs, memory —
 the firmware's placeholders are sized for that), so the kernel takes the edited
 tree as it takes iBoot's own fixups. Nothing on disk changes. The tree is found by
-a magic scan of RAM and, precisely, by the address `boot_args` names (`DeviceTreeP`),
-re-patched every tick until the guest's GPU has drawn — by then the kernel has the
-tree in its registry.
-The model identifier is opt-in and experimental: macOS keys some hardware
-decisions off `hw.model`, and the About artwork may follow it.
+the address `boot_args` names (`DeviceTreeP`, a virtual address: physical is
+vaddr − virtBase + physBase) and by the product-name string itself, re-patched every
+tick until the guest's GPU has drawn — by then the kernel has the tree in its registry.
+The tree is Apple's ADT — no FDT magic: nodes of property and child counts, properties
+of a 32-byte name, a size and a value (m1n1's adt.py documents it). The fixup rewrites
+`product-name` and `model` by property name, leaving `compatible` (driver matching)
+alone. The model identifier is opt-in: the app snaps it to the newest iPhone the guest
+macOS recognises, same variant, so the About artwork follows (`DeviceIdentity.swift`);
+macOS keys some hardware decisions off `hw.model`.
 
 ## Sharing
 
