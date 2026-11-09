@@ -33,6 +33,10 @@ struct SessionView: View {
     @State private var showRevealHint = false
     @State private var pointerRefused = false
     @AppStorage("henge.controls.hintsShown") private var revealHintsShown = 0
+    /// Once per install: macOS's moving wallpapers and aerial screen saver are video, decoded by the emulated
+    /// CPUs (a phone ran about 30% faster with a still one).
+    @AppStorage("henge.tips.stillWallpaperShown") private var stillWallpaperTipShown = false
+    @State private var showWallpaperTip = false
     @State private var confirmStop = false
     @State private var zoomCentre = CGPoint(x: 0.5, y: 0.5) // where the zoomed view is, 0...1 of the Mac's screen
     @State private var map: UIImage?
@@ -104,6 +108,18 @@ struct SessionView: View {
                         .transition(.opacity)
                         .allowsHitTesting(false)
                 }
+                if showWallpaperTip && !showRevealHint && !pointerRefused {
+                    Label("For more speed, give this Mac a still wallpaper and set its screen saver to Never in System Settings.", systemImage: "speedometer")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: min(full.width - 40, 520))
+                        .padding(.horizontal, 18).padding(.vertical, 12)
+                        .deskGlass(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        .position(x: full.width / 2, y: insets.top + 56)
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
+                }
                 if let error { errorCard(error, layout) }
                 KeyboardCatcher(active: $typing).frame(width: 0, height: 0)
             }
@@ -113,6 +129,7 @@ struct SessionView: View {
             .animation(.easeInOut(duration: 0.25), value: typing)
             .animation(.easeInOut(duration: 0.25), value: controlsHidden)
             .animation(.easeInOut(duration: 0.25), value: showRevealHint)
+            .animation(.easeInOut(duration: 0.25), value: showWallpaperTip)
             .onReceive(NotificationCenter.default.publisher(for: UIPointerLockState.didChangeNotification)) { _ in
                 pointerRefused = PointerLock.refused
             }
@@ -442,7 +459,7 @@ struct SessionView: View {
             List {
                 Section(phase) {
                     LabeledContent("CPUs on", value: "\(cpusOn) of \(cpus)")
-                    LabeledContent("iPad thermal", value: Self.thermalLabel(thermalState))
+                    LabeledContent("Temperature", value: Self.thermalLabel(thermalState))
                     LabeledContent("Translated blocks", value: String(format: "%.1f M/s", blocksPerSecond / 1e6))
                     LabeledContent("Network frames", value: "\(framesOut) out, \(framesIn) in")
                     LabeledContent("Up", value: "\(Int(Date().timeIntervalSince(started))) s")
@@ -483,6 +500,24 @@ struct SessionView: View {
                          : "Once for each Mac: open Terminal on the Mac, tap this, then press Return. When macOS asks about henge-agent and local networks, choose Allow. It types \(Sharing.setUpCommand) and needs the Mac's keyboard layout to be U.S.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                Section("Lighter macOS") {
+                    Button("Type the Lighter macOS Command") {
+                        showDetails = false
+                        Task {
+                            try? await Task.sleep(nanoseconds: 600_000_000)
+                            await Keys.typeSlowly(Sharing.lightenCommand)
+                        }
+                    }
+                    Button("Type the Undo Command") {
+                        showDetails = false
+                        Task {
+                            try? await Task.sleep(nanoseconds: 600_000_000)
+                            await Keys.typeSlowly(Sharing.unlightenCommand)
+                        }
+                    }
+                    Text("Less drawing for the emulated CPUs: window and Dock animations, desktop widgets, the screen saver and a moving wallpaper go. Open Terminal on the Mac, tap the button and press Return, then log out and back in. Also turn on Reduce Motion and Reduce Transparency in the Mac's System Settings, Accessibility. Undo puts it back, apart from the wallpaper. Needs the Mac's keyboard layout to be U.S.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 Section("Log") {
                     VStack(alignment: .leading, spacing: 1) {
                         ForEach(Array(log.suffix(30).enumerated()), id: \.offset) { _, line in
@@ -517,6 +552,7 @@ struct SessionView: View {
             return
         }
         var buffer = [CChar](repeating: 0, count: 256)
+        JITBootstrap.releaseLingeringDebugger()
         Sharing.prepare()
         EngineTuning.apply()
         henge_vm_set_display(UInt32(mac.screen.width), UInt32(mac.screen.height))
@@ -569,8 +605,15 @@ struct SessionView: View {
             if tick % 10 == 0 {
                 let gpuFrames = henge_vm_gpu_frames()
                 HengeLog.log("perf", "blocks/s \(String(format: "%.0f", blocksPerSecond)), GPU frames/10s \(gpuFrames &- lastGPUFrames), "
-                             + "network tx \(framesOut), rx \(framesIn), thermal \(Self.thermalLabel(heat))")
+                             + "network tx \(framesOut), rx \(framesIn), dns \(henge_vm_dns(0)) answered \(henge_vm_dns(2)) unanswered, "
+                             + "thermal \(Self.thermalLabel(heat))")
                 lastGPUFrames = gpuFrames
+                JITBootstrap.releaseLingeringDebugger()
+            }
+            if tick == 60 && !stillWallpaperTipShown { // about when the desktop is up after a login
+                stillWallpaperTipShown = true
+                showWallpaperTip = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 10) { showWallpaperTip = false }
             }
             if tick % 30 == 0 { HengeLog.logFootprint("session") } // how close to the limit, for a memory kill leaves no crash report
             if tick % 60 == 0 { MacPreview.save(for: mac) }
