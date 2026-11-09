@@ -90,8 +90,10 @@ final class PerfMark: ObservableObject {
         var out: [String] = []
         let cpus = Double(max(b.ncpus, 1))
         let asleep = Double(b.wfi_us &- a.wfi_us) / 1e6
+        let translating = Double(b.translate_us &- a.translate_us) / 1e6
         out.append("cpu: \(number(rate(b.blocks, a.blocks, seconds)))/s blocks, "
-                   + "\(number(rate(b.translations, a.translations, seconds)))/s translated, "
+                   + "\(number(rate(b.translations, a.translations, seconds)))/s translated "
+                   + "(\(share(translating, seconds)) of the time), "
                    + "\(number(rate(b.slow_mem, a.slow_mem, seconds)))/s slow memory, "
                    + "\(number(rate(b.interrupts, a.interrupts, seconds)))/s interrupts, "
                    + "\(number(rate(b.exceptions, a.exceptions, seconds)))/s exceptions, "
