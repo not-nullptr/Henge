@@ -199,6 +199,34 @@ static void test_final_tree(void) {
     free(ram);
 }
 
+static void test_string_fallback(void) {
+    uint64_t size = 2 << 20;
+    uint8_t *ram = calloc(1, size);
+    CHECK(ram != NULL);
+    if (!ram) return;
+    memcpy(ram + 0x50000, "Apple Virtual Machine 1\0", 24); /* the string, but no tree magic anywhere */
+    CHECK(hv_dt_fixup_start(ram, size, 0, "iPhone 17 Pro", NULL) == 1);
+    hv_dt_fixup_poll();
+    CHECK(memmem(ram, size, "iPhone 17 Pro", 13));
+    CHECK(!memmem(ram, size, "Apple Virtual Machine 1", 24));
+    free(ram);
+}
+
+static void test_string_tree(void) {
+    uint64_t size = 2 << 20;
+    uint8_t *ram = calloc(1, size);
+    CHECK(ram != NULL);
+    if (!ram) return;
+    b_vmapple("Apple Virtual Machine 1", NULL);
+    uint32_t total = get32(blob + 4);
+    memcpy(ram + 0x10004, blob, total); /* 4-byte aligned: neither the page nor the 16-byte scan sees it */
+    CHECK(hv_dt_fixup_start(ram, size, 0, "iPhone 17 Pro", "iPhone18,1") == 1);
+    hv_dt_fixup_poll(); /* the string anchor walks back to the magic and patches */
+    CHECK(memmem(ram, size, "iPhone 17 Pro", 13));
+    CHECK(memmem(ram, size, "iPhone18,1", 10));
+    free(ram);
+}
+
 int main(void) {
     test_both();
     test_name_only();
@@ -208,6 +236,8 @@ int main(void) {
     test_scan();
     test_oversized_slot();
     test_final_tree();
+    test_string_fallback();
+    test_string_tree();
     if (failures) fprintf(stderr, "test_dt_fixup: %d failure%s\n", failures, failures == 1 ? "" : "s");
     else printf("test_dt_fixup: all pass\n");
     return failures ? 1 : 0;

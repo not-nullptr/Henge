@@ -31,7 +31,7 @@ static uint64_t tracked[8];
 static int ntracked;
 static uint64_t final_off, final_len; /* the tree boot_args names, once known */
 static int have_final;
-static uint64_t passes, magic_seen, magic_valid; /* what the scan saw, for the stop summary */
+static uint64_t passes, magic_seen, magic_valid, string_hits; /* what the scan saw, for the stop summary */
 static int magic_logged, ba_logged;
 
 static double now(void) {
@@ -136,7 +136,7 @@ int hv_dt_fixup_start(uint8_t *r, uint64_t size, uint64_t base, const char *prod
     want_name[0] = want_model[0] = 0;
     active = total_changed = ntracked = have_final = diag = 0;
     final_off = final_len = 0;
-    passes = magic_seen = magic_valid = 0;
+    passes = magic_seen = magic_valid = string_hits = 0;
     magic_logged = ba_logged = 0;
     started = last_pass = 0;
     if (!r) return 0;
@@ -170,8 +170,14 @@ int hv_dt_fixup_tree(uint64_t offset, uint64_t len) {
     have_final = 1;
     final_off = offset;
     final_len = len;
-    fprintf(stderr, "hengevm: device tree: boot_args names the final tree at RAM +%llx (%llu bytes)\n",
+    fprintf(stderr, "hengevm: device tree: holding the final tree at RAM +%llx (%llu bytes)\n",
             (unsigned long long)offset, (unsigned long long)len);
+    int n = hv_dt_fixup_blob(ram + offset, len);
+    if (n) {
+        fprintf(stderr, "hengevm: device tree (final) at RAM +%llx: rewrote %d string%s\n",
+                (unsigned long long)offset, n, n == 1 ? "" : "s");
+        total_changed += n;
+    }
     return 1;
 }
 
@@ -237,6 +243,56 @@ static void find_boot_args_tree(void) {
     }
 }
 
+/* The surest anchor: the product-name string the kernel displays. boot_args may
+   point at a wrapped tree, and the magic may sit at any alignment, so find the
+   string itself, then the tree header before it. If the tree parses, both strings
+   are rewritten through it; if its format is opaque, the display string is patched
+   in place (safe for product-name; the model identifier is left to a real tree). */
+static void patch_name_in_place(uint64_t off) {
+    uint32_t sl = (uint32_t)strlen(STOCK_NAME) + 1, n = (uint32_t)strlen(want_name) + 1;
+    if (!want_name[0] || n > sl || memcmp(ram + off, STOCK_NAME, sl)) return;
+    memcpy(ram + off, want_name, n);
+    memset(ram + off + n, 0, sl - n);
+    total_changed++;
+    fprintf(stderr, "hengevm: device tree: patched product-name in place at RAM +%llx\n", (unsigned long long)off);
+}
+
+static void find_by_string(void) {
+    if (have_final) return;
+    size_t nlen = strlen(STOCK_NAME) + 1; /* the property value, NUL included */
+    uint64_t pos = 0;
+    int hits = 0;
+    while (pos + nlen <= ram_size) {
+        const uint8_t *hit = memmem(ram + pos, ram_size - pos, STOCK_NAME, nlen);
+        if (!hit) break;
+        uint64_t hoff = (uint64_t)(hit - ram);
+        string_hits++;
+        if (hits < 3)
+            fprintf(stderr, "hengevm: device tree: product-name string at RAM +%llx\n", (unsigned long long)hoff);
+        hits++;
+        /* The tree's magic precedes the string; walk back to the nearest valid
+           header whose span reaches the string. */
+        uint64_t floor = hoff > (1u << 20) ? hoff - (1u << 20) : 0;
+        int found = 0;
+        for (uint64_t b = hoff & ~3ull; b > floor; b -= 4) {
+            const uint8_t *c = ram + b;
+            if (c[0] != 0xd0 || c[1] != 0x0d || c[2] != 0xfe || c[3] != 0xed) continue;
+            if (!is_dtb(c, ram_size - b) || b + be32(c + 4) <= hoff) continue;
+            fprintf(stderr, "hengevm: device tree: the string sits in a tree at RAM +%llx (%u bytes)\n",
+                    (unsigned long long)b, be32(c + 4));
+            hv_dt_fixup_tree(b, be32(c + 4));
+            found = 1;
+            break;
+        }
+        if (found) return;
+        if (hits <= 3)
+            fprintf(stderr, "hengevm: device tree: no tree magic before the string at +%llx; patching the string\n",
+                    (unsigned long long)hoff);
+        patch_name_in_place(hoff);
+        pos = hoff + nlen;
+    }
+}
+
 /* One scan pass. Runs on the background thread (or, in tests, inline). */
 static void scan_pass(void) {
     passes++;
@@ -273,6 +329,7 @@ static void scan_pass(void) {
         if (b[0] == 0xd0 && b[1] == 0x0d && b[2] == 0xfe && b[3] == 0xed) consider(off, limit - off);
     }
     find_boot_args_tree();
+    find_by_string();
 }
 
 void hv_dt_fixup_poll(void) {
@@ -314,8 +371,9 @@ void hv_dt_fixup_run(void) {
 
 void hv_dt_fixup_stop(void) {
     if (!active) return;
-    fprintf(stderr, "hengevm: device tree: the GPU drew after %llu passes (%llu tree magic seen, %llu valid); %d string%s rewritten%s\n",
+    fprintf(stderr, "hengevm: device tree: the GPU drew after %llu passes (%llu tree magic seen, %llu valid, %llu name strings); %d string%s rewritten%s\n",
             (unsigned long long)passes, (unsigned long long)magic_seen, (unsigned long long)magic_valid,
-            total_changed, total_changed == 1 ? "" : "s", total_changed ? "" : ", the guest keeps its own name");
+            (unsigned long long)string_hits, total_changed, total_changed == 1 ? "" : "s",
+            total_changed ? "" : ", the guest keeps its own name");
     active = 0;
 }
