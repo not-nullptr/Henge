@@ -16,7 +16,12 @@
 #include "translate.h"
 
 void hv_flush_blocks(HvMachine *m) {
-    /* Every other CPU is parked (stop_the_world): the one moment the TLB layout can change. */
+    /* Every other CPU is parked (stop_the_world): the one moment the TLB layout can change.
+       What it costs, in the log: a full flush drops every translation, and the guest then
+       retranslates its working set -- seconds of it, which is what a freeze looks like. */
+    uint64_t t0 = mach_absolute_time();
+    int dropped = m->nblocks;
+    size_t used_bytes = m->jit.used * 4;
     if ((hv_knob[HV_K_TLBT] != 0) != hv_tlb_tmajor) {
         hv_tlb_tmajor = hv_knob[HV_K_TLBT] != 0;
         for (int i = 0; i < m->ncpus; i++)
@@ -51,6 +56,11 @@ void hv_flush_blocks(HvMachine *m) {
         for (size_t i = 0; i < bytes / 4; i++) rw[i] = 0;
         hv_jit_finish(&m->jit, m->jit.base, m->jit.capacity);
     }
+    /* Integers only: the guest's FP registers are live here (print_stats calls hv_fp_leave first). */
+    if (dropped)
+        fprintf(stderr, "hengevm: jit full: dropped %d blocks (%zu MB of code), the flush itself took %llu us; "
+                        "the guest retranslates from here\n", dropped, used_bytes >> 20,
+                (unsigned long long)((mach_absolute_time() - t0) / 24));
 }
 
 /* Parked: not running guest code, nor using its TLB, so other CPUs need not

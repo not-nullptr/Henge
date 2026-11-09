@@ -119,8 +119,10 @@ final class PerfMark: ObservableObject {
         } else {
             out.append("frame gaps: no frame was presented in this window")
         }
+        let flushes = b.flush_full &- a.flush_full
         out.append("engine: \(number(Double(b.blocks_held))) blocks held, "
-                   + "JIT \((b.jit_words * 4) >> 20) MB, \(b.flush_full) full flushes, "
+                   + "JIT \((b.jit_words * 4) >> 20) MB, "
+                   + "\(flushes) full flush\(flushes == 1 ? "" : "es") in this window (\(b.flush_full) since boot), "
                    + "\(b.cpus_on)/\(b.ncpus) CPUs on, net \(b.net_tx) tx \(b.net_rx) rx")
         return out
     }
