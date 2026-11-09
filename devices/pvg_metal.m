@@ -134,11 +134,21 @@ enum { OBJ_BUFFER = 1, OBJ_TEXTURE = 2, OBJ_FUNCTION = 6, OBJ_SERIALIZED = 7, OB
     NSMutableDictionary<NSString *, NSNumber *> *planar_uses; /* mappings using each: the entry goes with the last one */
     NSMutableSet<NSString *> *complaints;
     uint64_t execs, draws, failed, heap_bytes, synced, remaps;
+    /* For a performance mark (hv_pvg_metal_stats): how much the guest's GPU asked for, how long
+       the CPU spent turning it into Metal, and how evenly the screen kept up. Atomic because the
+       mark reads them from the app's thread while the worker and the presenter write them. */
+    _Atomic uint64_t passes;         /* render and compute passes begun */
+    _Atomic uint64_t encode_us, wait_us; /* time encoding a batch, and the time its commit took */
+    _Atomic uint64_t present_us, drawable_wait_us; /* the presenter: drawing a frame, and nextDrawable's wait */
+    _Atomic uint64_t surface_count;  /* surfaces the guest has mapped right now */
+    _Atomic uint64_t gap_n, gap_head;
+    _Atomic uint64_t gaps_ns[256];   /* intervals between presented frames, newest at gap_head */
+    _Atomic uint64_t last_present_ns;
     /* Work the GPU has not finished. Stamps are given back in the order they came: the
        GPU's completion handlers run in the order of commit. */
     _Atomic int inflight;
+    _Atomic uint64_t inflight_peak; /* the deepest the GPU's queue got since the last reset */
     id<MTLCommandBuffer> last_cb;
-    double encode_time, gpu_wait_time;
     BOOL pipeline_set; /* in the open encoder */
     BOOL tess_factors; /* so is a tessellation factor buffer */
     uint32_t pre_raster_samples, pre_imageblock, pre_threadgroup, pre_tile_w, pre_tile_h; /* for the next pass */
@@ -866,6 +876,7 @@ static void sync_iosurface(HvObject *s) {
                                                deallocator:^(void *at, NSUInteger size) { vm_deallocate(mach_task_self(), (vm_address_t)at, size); }];
         surface->mapping_in_buffer = surface->object != nil;
         surfaces[key] = surface;
+        atomic_fetch_add(&surface_count, 1);
         if (desc[0x3e] >= 2) {
             surface->alloc = alloc;
             IOSurfaceRef made = make_iosurface(surface, desc, alloc);
@@ -1154,6 +1165,7 @@ typedef struct {
         fprintf(stderr, "trace: pass c0 ref %u %lux%lu fmt %lu load %lu store %lu clear %.2f %.2f %.2f %.2f surface %s heap %d\n", U32(0x4c), (unsigned long)c0.width, (unsigned long)c0.height, (unsigned long)c0.pixelFormat, (unsigned long)d.colorAttachments[0].loadAction, (unsigned long)d.colorAttachments[0].storeAction, cc.red, cc.green, cc.blue, cc.alpha, co && co->surface ? "yes" : "no", c0.heap != nil);
     }
     id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:d];
+    atomic_fetch_add(&passes, 1);
     if (!e) {
         NSMutableString *m = [NSMutableString stringWithString:@"no render encoder:"];
         for (int i = 0; i < 8; i++) {
@@ -1811,7 +1823,8 @@ typedef struct {
     static int sync = -1; /* HV_PVG_SYNC: wait for the GPU after every batch */
     if (sync < 0) sync = getenv("HV_PVG_SYNC") != NULL;
     HvPvgLite *l = lite;
-    atomic_fetch_add(&inflight, 1);
+    int depth = atomic_fetch_add(&inflight, 1) + 1;
+    if ((uint64_t)depth > atomic_load(&inflight_peak)) atomic_store(&inflight_peak, (uint64_t)depth);
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
         if (done.error) {
             self->failed++;
@@ -1913,7 +1926,7 @@ typedef struct {
             }
             continue;
         }
-        if (!e && type == 1) e = [cb computeCommandEncoder], pipeline_set = NO;
+        if (!e && type == 1) e = [cb computeCommandEncoder], pipeline_set = NO, atomic_fetch_add(&passes, 1);
         if (!e && type == 2) e = [cb blitCommandEncoder];
         etype = type;
         @try {
@@ -1960,12 +1973,14 @@ typedef struct {
     double t1 = now_seconds();
     [self commit:cb channel:ch stamp:stamp complete:YES];
     double t2 = now_seconds();
-    encode_time += t1 - t_begin, gpu_wait_time += t2 - t1;
+    atomic_fetch_add(&encode_us, (uint64_t)((t1 - t_begin) * 1e6));
+    atomic_fetch_add(&wait_us, (uint64_t)((t2 - t1) * 1e6));
     if (++execs % 2000 == 0) {
-        static double t0;
+        static double t0, last_enc, last_wait;
         if (!t0) t0 = now_seconds();
-        fprintf(stderr, "hengevm: pvg-metal: %llu execs, %llu draws, %llu failed, %llu synced, %llu remaps, %.0f s; encoding %.2f s, waiting for the GPU %.2f s\n", (unsigned long long)execs, (unsigned long long)draws, (unsigned long long)failed, (unsigned long long)synced, (unsigned long long)remaps, now_seconds() - t0, encode_time, gpu_wait_time);
-        encode_time = gpu_wait_time = 0;
+        double enc = (double)atomic_load(&encode_us) / 1e6, wait = (double)atomic_load(&wait_us) / 1e6;
+        fprintf(stderr, "hengevm: pvg-metal: %llu execs, %llu draws, %llu failed, %llu synced, %llu remaps, %.0f s; encoding %.2f s, waiting for the GPU %.2f s\n", (unsigned long long)execs, (unsigned long long)draws, (unsigned long long)failed, (unsigned long long)synced, (unsigned long long)remaps, now_seconds() - t0, enc - last_enc, wait - last_wait);
+        last_enc = enc, last_wait = wait;
     }
     return YES;
 }
@@ -2217,7 +2232,9 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
             target.drawableSize = want;
             [CATransaction commit];
         }
+        double t_wait = now_seconds();
         id<CAMetalDrawable> drawable = [target nextDrawable]; /* the wait is here */
+        atomic_fetch_add(&drawable_wait_us, (uint64_t)((now_seconds() - t_wait) * 1e6));
         if (!drawable) {
             os_unfair_lock_lock(&screen_lock);
             screen_dirty = YES;
@@ -2268,6 +2285,7 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
             continue;
         }
         id<MTLCommandBuffer> cb = [queue commandBuffer];
+        double t_draw = now_seconds();
         MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
         pass.colorAttachments[0].texture = drawable.texture;
         pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
@@ -2327,10 +2345,19 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
             [cb presentDrawable:drawable];
             [cb commit];
             gpu_frames++;
+            /* The interval from the frame before: what "it stutters" is, as a number. */
+            uint64_t now_ns = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+            uint64_t before = atomic_exchange(&last_present_ns, now_ns);
+            if (before) {
+                uint64_t head = atomic_fetch_add(&gap_head, 1) % 256;
+                atomic_store(&gaps_ns[head], now_ns - before);
+                if (atomic_load(&gap_n) < 256) atomic_fetch_add(&gap_n, 1);
+            }
         } else {
             screen_dirty = YES;
         }
         os_unfair_lock_unlock(&screen_lock);
+        atomic_fetch_add(&present_us, (uint64_t)((now_seconds() - t_draw) * 1e6));
     }
 }
 
@@ -2527,6 +2554,54 @@ uint64_t hv_pvg_metal_gpu_frames(HvPvgMetal *m) {
     return m ? ((__bridge HvReplay *)m)->gpu_frames : 0;
 }
 
+/* For a performance mark: what the GPU side has done, and how evenly the screen kept up.
+   The counters are cumulative, so the caller takes the difference across its window; the
+   frame intervals are the ones recorded since the last reset, so a mark's window has its own. */
+void hv_pvg_metal_stats(HvPvgMetal *m, HvPvgStats *out, int reset) {
+    if (!out) return;
+    memset(out, 0, sizeof *out);
+    if (!m) return;
+    HvReplay *r = (__bridge HvReplay *)m;
+    /* The worker's own counters (execs, draws, ...) are read without its queue: they are
+       aligned 64-bit statistics, not state, and a mark must not wait behind a frame. */
+    out->execs = r->execs, out->draws = r->draws, out->failed = r->failed;
+    out->synced = r->synced, out->remaps = r->remaps;
+    out->passes = atomic_load(&r->passes);
+    out->encode_us = atomic_load(&r->encode_us), out->wait_us = atomic_load(&r->wait_us);
+    out->present_us = atomic_load(&r->present_us), out->drawable_wait_us = atomic_load(&r->drawable_wait_us);
+    out->surfaces = atomic_load(&r->surface_count);
+    out->inflight = (uint64_t)atomic_load(&r->inflight);
+    out->inflight_peak = atomic_load(&r->inflight_peak);
+    out->frames = r->gpu_frames;
+    uint32_t n = (uint32_t)atomic_load(&r->gap_n);
+    if (n > 256) n = 256;
+    uint64_t head = atomic_load(&r->gap_head) % 256;
+    double v[256];
+    for (uint32_t i = 0; i < n; i++) {
+        /* Oldest first: the ring holds the last 256 intervals, ending just before head. */
+        uint32_t at = (uint32_t)((head + 256 - n + i) % 256);
+        v[i] = (double)atomic_load(&r->gaps_ns[at]) / 1e9;
+    }
+    if (reset) {
+        atomic_store(&r->gap_n, 0);
+        atomic_store(&r->gap_head, 0);
+        atomic_store(&r->last_present_ns, 0); /* the gap across a reset is not a frame time */
+        atomic_store(&r->inflight_peak, out->inflight);
+    }
+    out->gaps = n;
+    if (!n) return;
+    /* Insertion sort: 256 values at most, once per mark. */
+    for (uint32_t i = 1; i < n; i++) {
+        double x = v[i];
+        uint32_t j = i;
+        while (j && v[j - 1] > x) v[j] = v[j - 1], j--;
+        v[j] = x;
+    }
+    out->gap_p50 = v[n / 2];
+    out->gap_p95 = v[n - 1 - (uint32_t)(n * 0.05)];
+    out->gap_max = v[n - 1];
+}
+
 void hv_pvg_metal_cursor_moved(HvPvgMetal *m) {
     if (!m) return;
     HvReplay *r = (__bridge HvReplay *)m;
@@ -2560,7 +2635,10 @@ void hv_pvg_metal_unmap(HvPvgMetal *m, uint32_t mapping) {
                 }
             }
         }
-        [r->surfaces removeObjectForKey:@(mapping)];
+        if (s) {
+            [r->surfaces removeObjectForKey:@(mapping)];
+            atomic_fetch_sub(&r->surface_count, 1);
+        }
         [r->mapped_textures removeObjectForKey:@(mapping)];
     });
 }

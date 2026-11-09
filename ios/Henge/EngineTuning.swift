@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Engine settings, without a rebuild. Defaults below, then the Performance settings,
 /// then Documents/henge-env.txt (KEY=VALUE per line, # comments; {Documents} in a value is that folder) overrides them all.
@@ -17,6 +18,13 @@ enum EngineTuning {
         "HV_FLUSH": "2",       // disk flush: F_BARRIERFSYNC, ordered but without a full fsync
         "HV_STATS": "10",      // seconds between engine stats lines in the log; 0 = off
     ]
+
+    /// Seconds between the engine's detailed stats lines, as the environment leaves it: what a
+    /// performance mark puts back when its window closes.
+    static var statsInterval: Int32 {
+        guard let raw = getenv("HV_STATS"), let value = Int32(String(cString: raw)) else { return 10 }
+        return value
+    }
 
     static func apply() {
         var env = defaults

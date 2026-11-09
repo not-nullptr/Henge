@@ -36,6 +36,17 @@ void hv_pvg_metal_cursor_moved(HvPvgMetal *m);
 /* Frames go to this CAMetalLayer from now on, drawn by the GPU. Any thread. */
 void hv_pvg_metal_set_layer(HvPvgMetal *m, void *layer);
 uint64_t hv_pvg_metal_gpu_frames(HvPvgMetal *m);
+/* What the GPU side did, for a performance mark. The counters are cumulative; the frame
+   intervals are those recorded since the last reset, which is what a stutter looks like as
+   numbers. reset clears the interval ring (not the counters: the caller takes deltas). */
+typedef struct HvPvgStats {
+    uint64_t execs, draws, passes, failed, synced, remaps, frames, surfaces, inflight, inflight_peak;
+    uint64_t encode_us, wait_us, present_us, drawable_wait_us;
+    uint32_t gaps;          /* frame intervals recorded since the last reset */
+    double gap_p50, gap_p95, gap_max; /* seconds */
+} HvPvgStats;
+void hv_pvg_metal_stats(HvPvgMetal *m, HvPvgStats *out, int reset);
+void hv_pvg_lite_stats(HvPvgLite *p, HvPvgStats *out, int reset);
 void hv_pvg_lite_task_pages(HvPvgLite *p, uint32_t task, uint64_t first, uint64_t n, uint32_t *out);
 void hv_pvg_lite_set_layer(HvPvgLite *p, void *layer);
 uint64_t hv_pvg_lite_gpu_frames(HvPvgLite *p);

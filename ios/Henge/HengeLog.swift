@@ -292,6 +292,10 @@ enum HengeLog {
         if ring.count > ringLimit { ring.removeFirst(ring.count - ringLimit) }
         ringLock.unlock()
 
+        // The computer on the network, when Settings > Log stream is on (LogStream.swift).
+        // Queued and sent from a queue of its own: this thread must never wait on the network.
+        LogStream.shared.offer(line)
+
         // The C side (henge-ios-jit.c, henge-display.c) writes to os_log itself as
         // well as stderr, because those are the lines most worth surviving a hard
         // crash. Mirroring them again here would double every one of them in

@@ -1,1 +1,4 @@
 build/
+# The log stream listener writes these where it is run from.
+henge.log
+henge-stream.log

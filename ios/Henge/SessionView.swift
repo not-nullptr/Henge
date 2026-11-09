@@ -25,6 +25,9 @@ struct SessionView: View {
     @AppStorage("henge.cursor.scale") private var cursorScale = Device.isPad ? 1 : 3
     @AppStorage("henge.cursor.sharp") private var sharpCursor = true
     @AppStorage(HardwareMouse.scrollSpeedKey) private var scrollSpeed = 0.3
+    @AppStorage(LogStream.enabledKey) private var logStreamOn = false
+    @ObservedObject private var mark = PerfMark.shared
+    @State private var markNote: String?
 
     @State private var typing = false
     @State private var zoomed = false
@@ -129,6 +132,16 @@ struct SessionView: View {
                         .transition(.opacity)
                         .allowsHitTesting(false)
                 }
+                if let markNote {
+                    Label(markNote, systemImage: mark.active ? "flag.fill" : "flag")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 18).padding(.vertical, 12)
+                        .deskGlass(in: Capsule())
+                        .position(x: full.width / 2, y: insets.top + 40)
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
+                }
                 if let error { errorCard(error, layout) }
                 KeyboardCatcher(active: $typing).frame(width: 0, height: 0)
             }
@@ -139,6 +152,14 @@ struct SessionView: View {
             .animation(.easeInOut(duration: 0.25), value: controlsHidden)
             .animation(.easeInOut(duration: 0.25), value: showRevealHint)
             .animation(.easeInOut(duration: 0.25), value: showWallpaperTip)
+            .animation(.easeInOut(duration: 0.25), value: markNote)
+            .onChange(of: mark.noteID) { _ in
+                markNote = mark.note
+                guard let shown = markNote else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+                    if markNote == shown { markNote = nil }
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: UIPointerLockState.didChangeNotification)) { _ in
                 pointerRefused = PointerLock.refused
             }
@@ -193,6 +214,7 @@ struct SessionView: View {
             HardwareKeys.releaseAll()
             HardwareMouse.shared.stop()
             VolumeClicks.shared.stop()
+            mark.reset()
         }
         .modifier(ExternalMacDisplayModifier(presentation: MacPresentation(display: display, aspect: mac.aspect)))
         .task { await run() }
@@ -284,6 +306,10 @@ struct SessionView: View {
                 Spacer()
                 tool("plus.magnifyingglass", "Zoom in") { zoomed = true }
                 Spacer()
+                if logStreamOn {
+                    markTool(Desk.text)
+                    Spacer()
+                }
                 tool("info.circle", "Details") { showDetails = true }
                 Spacer()
                 tool("power", "Shut down", tint: Desk.bad) { stopTapped() }
@@ -366,6 +392,14 @@ struct SessionView: View {
         .accessibilityLabel(label)
     }
 
+    /// The performance mark: tap before something slow, tap again after it. Only while the log is
+    /// being streamed to a computer (Settings > Log stream), since that is where the report goes.
+    private func markTool(_ tint: Color) -> some View {
+        tool(mark.active ? "flag.fill" : "flag",
+             mark.active ? "End the mark" : "Mark the start of something slow",
+             tint: mark.active ? Desk.warn : tint) { mark.toggle() }
+    }
+
     // MARK: Filling the phone
 
     @ViewBuilder private func floatingControls(_ layout: Layout) -> some View {
@@ -376,6 +410,7 @@ struct SessionView: View {
             tool("keyboard", "Keyboard", tint: .white) { typing.toggle() }
             pasteTool
             tool(zoomed ? "minus.magnifyingglass" : "plus.magnifyingglass", zoomed ? "Zoom out" : "Zoom in", tint: zoomed ? Desk.accentLight : .white) { zoomed.toggle() }
+            if logStreamOn { markTool(.white) }
             tool("info.circle", "Details", tint: .white) { showDetails = true }
             Rectangle().fill(Color.white.opacity(0.3)).frame(width: 1, height: 22).padding(.horizontal, 4)
             tool("power", "Shut down", tint: Desk.bad) { stopTapped() }

@@ -147,6 +147,60 @@ int henge_vm_guest_el0(void) {
     return 0;
 }
 
+void henge_vm_stats_interval(int seconds) {
+    if (state == 1) hv_vm_machine()->stats_interval = seconds < 0 ? 0 : seconds;
+}
+
+int henge_vm_perf(HengePerf *out, int reset_gaps) {
+    if (!out) return -1;
+    memset(out, 0, sizeof *out);
+    if (state != 1) return -1;
+    HvMachine *m = hv_vm_machine();
+    HvStats *s = &m->stats;
+    out->blocks = s->blocks;
+    out->translations = s->translations;
+    out->translated_insns = s->translated_insns;
+    out->slow_mem = m->stat_slow_mem;
+    out->exceptions = s->exceptions;
+    out->interrupts = s->interrupts;
+    out->tlb_flushes = s->tlb_flushes;
+    out->wfi = s->wfi;
+    out->translate_us = s->translate_ticks / 24; /* mach ticks are 24 MHz */
+    out->wfi_us = s->wfi_ticks / 24;
+    out->chained = s->chained;
+    out->ijc_fills = s->ijc_fills;
+    out->block_flushes = s->block_flushes;
+    out->flush_full = s->flush_full;
+    out->blocks_held = (uint64_t)m->nblocks;
+    out->jit_words = (uint64_t)m->jit.used;
+    out->net_tx = hv_net_tx_frames;
+    out->net_rx = hv_net_rx_frames;
+    out->ncpus = (uint32_t)m->ncpus;
+    for (int i = 0; i < m->ncpus; i++)
+        if (m->cpus[i] && !m->cpus[i]->off) out->cpus_on++;
+    HvVmapple *b = hv_vm_board();
+    HvPvgStats g;
+    hv_pvg_lite_stats(b ? b->pvg : NULL, &g, reset_gaps);
+    out->gpu_execs = g.execs;
+    out->gpu_draws = g.draws;
+    out->gpu_passes = g.passes;
+    out->gpu_failed = g.failed;
+    out->gpu_remaps = g.remaps;
+    out->gpu_frames = g.frames;
+    out->gpu_surfaces = g.surfaces;
+    out->gpu_inflight = g.inflight;
+    out->gpu_inflight_peak = g.inflight_peak;
+    out->gpu_encode_us = g.encode_us;
+    out->gpu_wait_us = g.wait_us;
+    out->gpu_present_us = g.present_us;
+    out->gpu_drawable_wait_us = g.drawable_wait_us;
+    out->gpu_gaps = g.gaps;
+    out->gpu_gap_p50 = g.gap_p50;
+    out->gpu_gap_p95 = g.gap_p95;
+    out->gpu_gap_max = g.gap_max;
+    return 0;
+}
+
 void henge_vm_share(const char *folder, const char *socket_path, const char *agent) {
     if (hv_share_start(folder, socket_path, agent) == 0) hv_net_set_share_socket(socket_path);
 }

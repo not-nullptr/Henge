@@ -14,6 +14,22 @@ struct SettingsView: View {
     @AppStorage(EngineTuning.wfiSpinKey) private var wfiSpin = false
     @AppStorage(EngineTuning.superblocksKey) private var superblocks = false
     @AppStorage(JITBootstrap.codeCacheKey) private var codeCacheMB = JITBootstrap.defaultCodeCacheMB
+    @ObservedObject private var stream = LogStream.shared
+    @AppStorage(LogStream.enabledKey) private var streamOn = false
+    @AppStorage(LogStream.hostKey) private var streamHost = ""
+    @AppStorage(LogStream.portKey) private var streamPort = LogStream.defaultPort
+    /// Typing an address should not reconnect on every key: the change is applied once it settles.
+    @State private var applyStream: Task<Void, Never>?
+
+    /// Applies the stream's address and port once typing pauses, rather than on every key.
+    private func applyStreamSoon() {
+        applyStream?.cancel()
+        applyStream = Task {
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled else { return }
+            LogStream.shared.applySettings()
+        }
+    }
 
     /// The second footer paragraph: how you click, given the selected input mode.
     private var inputDescription: String {
@@ -119,10 +135,35 @@ struct SettingsView: View {
                     ShareLink(item: HengeLog.logFileURL) { Label("Share henge.log", systemImage: "square.and.arrow.up") }
                 }
                 .listRowBackground(Desk.card)
+                Section("Log stream") {
+                    Toggle("Send the log to a computer", isOn: $streamOn)
+                    TextField("Computer's address", text: $streamHost)
+                        .keyboardType(.numbersAndPunctuation)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    HStack {
+                        Text("Port")
+                        Spacer()
+                        TextField("Port", value: $streamPort, format: .number)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(maxWidth: 100)
+                    }
+                    LabeledContent("State", value: stream.statusText)
+                    if stream.dropped > 0 {
+                        LabeledContent("Lines dropped", value: "\(stream.dropped)")
+                    }
+                    Text("Run tools/henge-log-listen.py on the computer first (python3 tools/henge-log-listen.py --port \(streamPort)); it prints the address to type above. With this on, every line Henge writes is sent there as it happens, and the Mac's controls gain a flag that marks the start and the end of something slow, logging what the engine and the GPU did over that window. iOS asks for local network access the first time.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                .listRowBackground(Desk.card)
             }
             .scrollContentBackground(.hidden)
             .background(Desk.page)
             .navigationTitle("Settings")
+            .onChange(of: streamOn) { _ in LogStream.shared.applySettings() }
+            .onChange(of: streamHost) { _ in applyStreamSoon() }
+            .onChange(of: streamPort) { _ in applyStreamSoon() }
         }
     }
 }

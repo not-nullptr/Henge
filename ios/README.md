@@ -60,6 +60,13 @@ the packager as an environment variable (`HENGE_ENTITLEMENTS=... ios/scripts/pac
   goes through GameController with the pointer locked, which iPadOS allows only
   for an app filling the screen. The first scroll values are logged to
   `henge.log`, to tune scrolling from a real device.
+- **Log stream** (`Henge/LogStream.swift`, `tools/henge-log-listen.py`): Settings ›
+  Log stream sends every line of `henge.log` over TCP to a computer on the same
+  network as it is written, so a session can be watched live. While that is on,
+  the session's controls gain a flag that marks the start and the end of something
+  slow (`Henge/PerfMark.swift`); the log then carries the engine's and the GPU's
+  counters over that window. [docs/agents/perf-marks.md](../docs/agents/perf-marks.md)
+  has the workflow and how to read the numbers.
 - **Chips**: the virtual CPU offers Armv8.5 instructions (`core/sysreg.c`), which
   macOS uses and which run as they are, so Henge needs an A14 or M1 or newer.
 

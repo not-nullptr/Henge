@@ -6,6 +6,22 @@ Every change keeps its original author in the git history.
 
 ## Unreleased
 
+### Watching a slow Mac
+- **The log goes to a computer on the network**, as it is written: Settings › Log stream takes
+  an address and a port, and `tools/henge-log-listen.py` on the computer prints what arrives
+  and appends it to a file. Lines are queued while the computer is away (bounded, with a
+  dropped-lines note), and the connection is retried every few seconds. No more copying
+  `henge.log` off the device after the fact.
+- **Performance marks**: while the log is being streamed, the session's controls gain a flag.
+  Tap it before something slow and again after it, and the log gets the difference across the
+  window — blocks, slow memory, interrupts and TLB flushes; GPU execs, draws and passes;
+  time spent encoding and committing commands, presenting, and waiting for a drawable;
+  and the p50/p95/max interval between presented frames, which is what a stutter is. The
+  engine's detailed stats lines come every second while a mark runs
+  (`henge_vm_stats_interval`). See [docs/agents/perf-marks.md](docs/agents/perf-marks.md).
+- The GPU side keeps counters for this (`HvPvgStats`): render and compute passes, encode and
+  present time, `nextDrawable` waits, mapped surfaces, and a ring of frame intervals.
+
 ### The screen is a Magic Trackpad 2
 - The session's trackpad is no longer a relative mouse: the engine presents it to the Mac as
   a Magic Trackpad 2 (Apple's vendor multitouch format) on the xHCI USB bus, so the guest's

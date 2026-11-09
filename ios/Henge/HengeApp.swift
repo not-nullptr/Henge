@@ -13,6 +13,8 @@ struct HengeApp: App {
         HengeLog.start()
         HengeLog.log("boot", "address space: \(henge_largest_reservation_gb()) GB can be reserved in one piece")
         EngineTuning.apply()
+        // Settings > Log stream: send the log to a computer on this network, if that is on.
+        LogStream.shared.applySettings()
         HengeLog.logFootprint("app-launch")
         JITBootstrap.noteLaunchState()
         HengeLog.log("app", "increased memory limit: \(Entitlements.increasedMemory ? "yes" : "no"); extended addressing: \(Entitlements.extendedAddressing ? "yes" : "no"); limit \(Entitlements.memoryLimitAtLaunch >> 20) MB")

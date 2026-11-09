@@ -378,6 +378,11 @@ uint64_t hv_pvg_lite_gpu_frames(HvPvgLite *p) {
     return p && p->metal ? hv_pvg_metal_gpu_frames(p->metal) : 0;
 }
 
+void hv_pvg_lite_stats(HvPvgLite *p, HvPvgStats *out, int reset) {
+    if (p && p->metal) hv_pvg_metal_stats(p->metal, out, reset);
+    else memset(out, 0, sizeof *out);
+}
+
 int hv_pvg_lite_snapshot(HvPvgLite *p, uint8_t *bgra, uint32_t width, uint32_t height) {
     return p && p->metal ? hv_pvg_metal_snapshot(p->metal, bgra, width, height) : -1;
 }

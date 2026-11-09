@@ -39,6 +39,27 @@ uint64_t henge_vm_net_frames(int sent);    /* Ethernet frames out (sent = 1) and
 int henge_vm_cpus_on(void);                /* CPUs the guest has started */
 int henge_vm_guest_el0(void);              /* any CPU running user code right now */
 
+/* A performance mark's numbers: the engine and its GPU side, cumulative since boot, so the
+   caller takes the difference across its window. henge_vm_perf fills them (0, or -1 when no
+   machine is running); reset_gaps clears the GPU's ring of frame intervals, so a mark's
+   window has its own. Times are microseconds. */
+typedef struct HengePerf {
+    uint64_t blocks, translations, translated_insns, slow_mem, exceptions, interrupts, tlb_flushes, wfi;
+    uint64_t translate_us, wfi_us;
+    uint64_t chained, ijc_fills, block_flushes, flush_full, blocks_held, jit_words;
+    uint64_t net_tx, net_rx;
+    uint32_t ncpus, cpus_on;
+    uint64_t gpu_execs, gpu_draws, gpu_passes, gpu_failed, gpu_remaps, gpu_frames, gpu_surfaces, gpu_inflight;
+    uint64_t gpu_inflight_peak;        /* the deepest the GPU's queue got since the last reset */
+    uint64_t gpu_encode_us, gpu_wait_us, gpu_present_us, gpu_drawable_wait_us;
+    uint32_t gpu_gaps;                 /* frame intervals recorded since the last reset */
+    double gpu_gap_p50, gpu_gap_p95, gpu_gap_max; /* seconds */
+} HengePerf;
+int henge_vm_perf(HengePerf *out, int reset_gaps);
+/* Seconds between the engine's detailed stats lines (0 turns them off). Live, at any time:
+   a performance mark asks for 1 while it runs and puts the setting back afterwards. */
+void henge_vm_stats_interval(int seconds);
+
 /* Input: Linux key codes, relative pointer, buttons 0 left 1 right 2 middle. */
 /* The shared folder and clipboard (host/share.c). henge_vm_share goes before henge_vm_boot; agent may be NULL.
    henge_share_take_clipboard returns what the guest copied, once: a malloc'd string, or NULL. */
