@@ -64,7 +64,14 @@ enum JITBootstrap {
     /// has room for it: about 6 GB on 12 GB iPhones). A bigger cache fills and empties less often (macOS 27 filled
     /// 1 GB about once a minute) and costs more memory (its blocks' records come to about 0.75 of its size). Fixed for
     /// the launch: the region is claimed once.
-    static let defaultCodeCacheMB: Int = Entitlements.memoryLimitAtLaunch >= 5_500 << 20 ? 1536 : 1024
+    ///
+    /// 1.5 GB also needs extended-virtual-addressing, not just the memory limit: generated code only runs below
+    /// 0x7000000000, and without that entitlement the largest hole below it is about 1080 MiB. The block reserved to
+    /// make a bigger hole is itself placed above the limit, so asking for 1.5 GB there comes back somewhere generated
+    /// code cannot run and the prewarm fails -- JIT then never turns on. Seen on an iPhone 18 Pro Max with a 6.1 GB
+    /// limit and no extended addressing.
+    static let defaultCodeCacheMB: Int =
+        Entitlements.memoryLimitAtLaunch >= 5_500 << 20 && Entitlements.extendedAddressing ? 1536 : 1024
     static let jitBytes: Int = ((UserDefaults.standard.object(forKey: codeCacheKey) as? Int) ?? defaultCodeCacheMB) == 1536 ? 1536 << 20 : 1024 << 20
 
     /// True once the region is held. The memory budget needs this: after a
