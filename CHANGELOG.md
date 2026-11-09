@@ -64,6 +64,15 @@ Based on upstream `main` at b744a78.
   — both: [hungbenjamin402](https://github.com/hungbenjamin402/Henge)
 
 ### New in this fork
+- **About This Mac can report the device Henge runs on**: a per-Mac *About This Mac*
+  setting makes the Mac say it is this iPhone/iPad, with its chip (the config region's
+  SoC name) and its name (a boot-time fixup of the firmware's Apple ADT device tree,
+  `host/dt_fixup.c`; nothing on disk is patched). A second toggle also reports a model
+  identifier so the guest shows a matching icon: the real one when the guest macOS
+  knows it, else the newest equivalent it recognises — an iPhone 18 Pro Max on Sequoia
+  reports iPhone17,2 (the 16 Pro Max) while the name stays "iPhone 18 Pro Max"
+  (`DeviceIdentity.swift`, `make test-identity`).
+  CLI: `--soc-name`, `--product-name`, `--model-id`, `--serial`, `--model`.
 - **Performance settings** (Settings → Performance), applied each time a Mac starts:
   - *Mac refresh rate*: 60 Hz by default. Every frame is emulated and replayed, so 120 Hz
     halves the CPU left to apps; 120 Hz stays available.
