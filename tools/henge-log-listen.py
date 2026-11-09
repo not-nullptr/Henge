@@ -63,6 +63,17 @@ def stamp() -> str:
     return now.strftime("%H:%M:%S.") + f"{now.microsecond // 1000:03d}"
 
 
+# Lines iOS repeats that say nothing about Henge. Dropped from the file and the screen; the
+# count is reported when the connection ends, so a filter that is hiding too much shows up.
+NOISE = (
+    "This app is not allowed to query for scheme",
+)
+
+
+def is_noise(line: str) -> bool:
+    return any(pattern.lower() in line.lower() for pattern in NOISE)
+
+
 def colour_for(line: str) -> str:
     if "[mark]" in line:
         return MARK
@@ -77,15 +88,22 @@ def serve_connection(conn: socket.socket, peer: str, out, args, lock: threading.
     with conn:
         conn.settimeout(None)
         reader = conn.makefile("rb")
-        with lock:
-            note = f"---- connected: {peer} at {dt.datetime.now().isoformat(timespec='seconds')} ----"
-            out.write(note + "\n")
-            out.flush()
-            if not args.quiet:
-                print(f"{DIM}{note}{RESET}", flush=True)
+        filtered = 0
+
+        def note(text: str) -> None:
+            with lock:
+                out.write(text + "\n")
+                out.flush()
+                if not args.quiet:
+                    print(f"{DIM}{text}{RESET}", flush=True)
+
+        note(f"---- connected: {peer} at {dt.datetime.now().isoformat(timespec='seconds')} ----")
         try:
             for raw in reader:
                 line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                if not args.no_filter and is_noise(line):
+                    filtered += 1
+                    continue
                 with lock:
                     out.write(line + "\n")
                     out.flush()
@@ -95,12 +113,10 @@ def serve_connection(conn: socket.socket, peer: str, out, args, lock: threading.
                 prefix = f"{DIM}{stamp()}{RESET} " if args.stamp_console else ""
                 print(f"{prefix}{colour}{line}{RESET}" if colour else f"{prefix}{line}", flush=True)
         except (ConnectionError, OSError) as error:
-            with lock:
-                note = f"---- {peer} went away: {error} ----"
-                out.write(note + "\n")
-                out.flush()
-                if not args.quiet:
-                    print(f"{DIM}{note}{RESET}", flush=True)
+            note(f"---- {peer} went away: {error} ----")
+        finally:
+            if filtered:
+                note(f"---- {filtered} lines filtered as noise ----")
 
 
 def main() -> int:
@@ -114,6 +130,8 @@ def main() -> int:
     parser.add_argument("--quiet", action="store_true", help="write the file only, print nothing")
     parser.add_argument("--no-stamp", dest="stamp_console", action="store_false",
                         help="print lines without a local time in front (a time is shown by default)")
+    parser.add_argument("--no-filter", dest="no_filter", action="store_true",
+                        help="keep the lines the filter drops (" + "; ".join(f'"{n}"' for n in NOISE) + ")")
     args = parser.parse_args()
 
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
