@@ -143,8 +143,10 @@ enum { OBJ_BUFFER = 1, OBJ_TEXTURE = 2, OBJ_FUNCTION = 6, OBJ_SERIALIZED = 7, OB
     _Atomic uint64_t present_us, drawable_wait_us; /* the presenter: drawing a frame, and nextDrawable's wait */
     _Atomic uint64_t surface_count;  /* surfaces the guest has mapped right now */
     _Atomic uint64_t gap_n, gap_head;
-    _Atomic uint64_t gaps_ns[256];   /* intervals between presented frames, newest at gap_head */
+    _Atomic uint64_t gaps_ns[1024];  /* intervals between presented frames, newest at gap_head */
     _Atomic uint64_t last_present_ns;
+    _Atomic uint64_t gap_max_ns;     /* the longest interval since the reset: the ring only holds the last few seconds */
+    _Atomic uint64_t gap_slow;       /* intervals over 50 ms since the reset: how often it stalled */
     /* Work the GPU has not finished. Stamps are given back in the order they came: the
        GPU's completion handlers run in the order of commit. */
     _Atomic int inflight;
@@ -2374,9 +2376,12 @@ static NSString *const screen_shaders = @"#include <metal_stdlib>\n"
             uint64_t now_ns = clock_gettime_nsec_np(CLOCK_MONOTONIC);
             uint64_t before = atomic_exchange(&last_present_ns, now_ns);
             if (before) {
-                uint64_t head = atomic_fetch_add(&gap_head, 1) % 256;
-                atomic_store(&gaps_ns[head], now_ns - before);
-                if (atomic_load(&gap_n) < 256) atomic_fetch_add(&gap_n, 1);
+                uint64_t gap = now_ns - before;
+                uint64_t head = atomic_fetch_add(&gap_head, 1) % 1024;
+                atomic_store(&gaps_ns[head], gap);
+                if (atomic_load(&gap_n) < 1024) atomic_fetch_add(&gap_n, 1);
+                if (gap > atomic_load(&gap_max_ns)) atomic_store(&gap_max_ns, gap);
+                if (gap > 50ull * 1000000) atomic_fetch_add(&gap_slow, 1);
             }
         } else {
             screen_dirty = YES;
@@ -2599,23 +2604,29 @@ void hv_pvg_metal_stats(HvPvgMetal *m, HvPvgStats *out, int reset) {
     out->inflight_peak = atomic_load(&r->inflight_peak);
     out->frames = r->gpu_frames;
     uint32_t n = (uint32_t)atomic_load(&r->gap_n);
-    if (n > 256) n = 256;
-    uint64_t head = atomic_load(&r->gap_head) % 256;
-    double v[256];
+    if (n > 1024) n = 1024;
+    uint64_t head = atomic_load(&r->gap_head) % 1024;
+    double v[1024];
     for (uint32_t i = 0; i < n; i++) {
-        /* Oldest first: the ring holds the last 256 intervals, ending just before head. */
-        uint32_t at = (uint32_t)((head + 256 - n + i) % 256);
+        /* Oldest first: the ring holds the last 1024 intervals, ending just before head. */
+        uint32_t at = (uint32_t)((head + 1024 - n + i) % 1024);
         v[i] = (double)atomic_load(&r->gaps_ns[at]) / 1e9;
     }
+    /* The worst of the whole window, which the ring alone cannot show: at 60 Hz it holds
+       about 17 seconds, and a mark can run for a minute. */
+    out->slow_gaps = atomic_load(&r->gap_slow);
+    out->gap_max = (double)atomic_load(&r->gap_max_ns) / 1e9;
     if (reset) {
         atomic_store(&r->gap_n, 0);
         atomic_store(&r->gap_head, 0);
         atomic_store(&r->last_present_ns, 0); /* the gap across a reset is not a frame time */
+        atomic_store(&r->gap_max_ns, 0);
+        atomic_store(&r->gap_slow, 0);
         atomic_store(&r->inflight_peak, out->inflight);
     }
     out->gaps = n;
     if (!n) return;
-    /* Insertion sort: 256 values at most, once per mark. */
+    /* Insertion sort: 1024 values at most, once per mark. */
     for (uint32_t i = 1; i < n; i++) {
         double x = v[i];
         uint32_t j = i;
@@ -2624,7 +2635,7 @@ void hv_pvg_metal_stats(HvPvgMetal *m, HvPvgStats *out, int reset) {
     }
     out->gap_p50 = v[n / 2];
     out->gap_p95 = v[n - 1 - (uint32_t)(n * 0.05)];
-    out->gap_max = v[n - 1];
+    if (v[n - 1] > out->gap_max) out->gap_max = v[n - 1];
 }
 
 void hv_pvg_metal_cursor_moved(HvPvgMetal *m) {

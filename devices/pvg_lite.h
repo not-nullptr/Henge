@@ -43,7 +43,8 @@ typedef struct HvPvgStats {
     uint64_t execs, draws, passes, failed, synced, remaps, frames, surfaces, inflight, inflight_peak;
     uint64_t encode_us, wait_us, present_us, drawable_wait_us;
     uint32_t gaps;          /* frame intervals recorded since the last reset */
-    double gap_p50, gap_p95, gap_max; /* seconds */
+    uint64_t slow_gaps;     /* of them, longer than 50 ms */
+    double gap_p50, gap_p95, gap_max; /* seconds; gap_max is the whole window's, not just the ring's */
 } HvPvgStats;
 void hv_pvg_metal_stats(HvPvgMetal *m, HvPvgStats *out, int reset);
 void hv_pvg_lite_stats(HvPvgLite *p, HvPvgStats *out, int reset);

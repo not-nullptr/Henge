@@ -34,8 +34,9 @@ gets the difference across the window:
   surfaces remapped.
 - `gpu time:` seconds and share of the window spent encoding commands into Metal, committing
   them, presenting a frame, and waiting for a drawable (`nextDrawable`).
-- `frame gaps:` p50, p95 and max interval between presented frames, over the window. This is
-  the closest thing to "it stuttered": 60 Hz is 16.7 ms.
+- `frame gaps:` p50 and p95 from the last 1024 intervals, and the **longest gap of the whole
+  window** with how many went over 50 ms. This is the closest thing to "it stuttered": 60 Hz
+  is 16.7 ms, and a four-second gap is the freeze itself.
 - `engine:` blocks held, JIT code used, full flushes, CPUs on, network frames.
 
 ## Reading it
@@ -45,10 +46,12 @@ gets the difference across the window:
 - **`queue … deep (peak …)` near 64** — the GPU is behind: the worker keeps committing and
   nothing is finishing. `waiting for a drawable` then rises too, because the drawable pool is
   exhausted by frames the GPU has not drawn yet.
-- **`gpu time: presenting` or `waiting for a drawable` high** — the display path is the cost,
-  not the guest.
-- **`frame gaps` p95 far above p50** — the frames that did arrive were uneven, which is what
-  the eye calls stutter, whatever the averages say.
+- **`gpu time: waiting for a drawable`** — some is normal: a presenter that keeps up still
+  waits for the screen's refresh, so about 16 ms per frame (roughly 15–25% of a window at
+  60 Hz) is pacing, not a stall. It is a problem when it is far higher *and* frames are missing.
+- **`frame gaps` p95 far above p50, or a max of seconds** — the frames that did arrive were
+  uneven, which is what the eye calls stutter, whatever the averages say. A gap of seconds
+  beside a `jit full:` line in the log is a full flush: the guest is retranslating.
 - **`passes` per frame** — how much work one frame is. Mission Control and Spaces redraw
   every window, so this jumps even when nothing else does.
 - **`slow memory` and `TLB flushes` high** — memory translation, not graphics.

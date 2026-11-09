@@ -115,7 +115,8 @@ final class PerfMark: ObservableObject {
                    + "waiting for a drawable \(duration(drawable)) s (\(share(drawable, seconds)))")
         if b.gpu_gaps > 0 {
             out.append("frame gaps: p50 \(interval(b.gpu_gap_p50)), p95 \(interval(b.gpu_gap_p95)), "
-                       + "max \(interval(b.gpu_gap_max)) over \(b.gpu_gaps) frames")
+                       + "max \(interval(b.gpu_gap_max)) over \(b.gpu_gaps) frames, "
+                       + "\(b.gpu_slow_gaps) over 50 ms")
         } else {
             out.append("frame gaps: no frame was presented in this window")
         }

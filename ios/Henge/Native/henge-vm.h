@@ -54,6 +54,7 @@ typedef struct HengePerf {
     uint64_t gpu_inflight_peak;        /* the deepest the GPU's queue got since the last reset */
     uint64_t gpu_encode_us, gpu_wait_us, gpu_present_us, gpu_drawable_wait_us;
     uint32_t gpu_gaps;                 /* frame intervals recorded since the last reset */
+    uint64_t gpu_slow_gaps;            /* of them, longer than 50 ms */
     double gpu_gap_p50, gpu_gap_p95, gpu_gap_max; /* seconds */
 } HengePerf;
 int henge_vm_perf(HengePerf *out, int reset_gaps);
