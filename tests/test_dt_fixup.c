@@ -227,6 +227,51 @@ static void test_string_tree(void) {
     free(ram);
 }
 
+/* Apple's ADT: nodes of {u32 prop_count, u32 child_count}, properties of
+   {char name[32], u32 size, value}. No magic. (m1n1 adt.py.) */
+static uint8_t adt[8192];
+static uint32_t apos;
+static void a_u32(uint32_t v) {
+    adt[apos] = (uint8_t)v;
+    adt[apos + 1] = (uint8_t)(v >> 8);
+    adt[apos + 2] = (uint8_t)(v >> 16);
+    adt[apos + 3] = (uint8_t)(v >> 24);
+    apos += 4;
+}
+static void a_prop(const char *name, const char *value, uint32_t size) {
+    memset(adt + apos, 0, 32);
+    memcpy(adt + apos, name, strlen(name));
+    apos += 32;
+    a_u32(size);
+    memcpy(adt + apos, value, size);
+    apos += (size + 3) & ~3u;
+}
+static void build_adt(void) {
+    apos = 0;
+    memset(adt, 0, sizeof adt);
+    a_u32(2); /* root: two properties */
+    a_u32(1); /* one child */
+    a_prop("model", "VirtualMac2,1\0", 14);
+    a_prop("compatible", "VirtualMac2,1\0AppleVirtualPlatformARM\0", 38); /* must NOT change */
+    a_u32(1); /* product child: one property */
+    a_u32(0);
+    a_prop("product-name", "Apple Virtual Machine 1\0", 24);
+}
+
+static void test_adt(void) {
+    build_adt();
+    CHECK(hv_dt_fixup_start(adt, sizeof adt, 0, "iPhone 18 Pro Max", "iPhone19,7") == 1);
+    CHECK(hv_dt_fixup_tree(0, apos) == 1); /* parses as an ADT, patches at once */
+    CHECK(memmem(adt, apos, "iPhone19,7", 10));            /* model rewritten */
+    CHECK(memmem(adt, apos, "iPhone 18 Pro Max", 17));     /* product-name rewritten */
+    CHECK(!memmem(adt, apos, "Apple Virtual Machine 1", 23));
+    CHECK(memmem(adt, apos, "VirtualMac2,1", 13));         /* compatible keeps it: driver matching safe */
+    CHECK(memmem(adt, apos, "AppleVirtualPlatformARM", 23));
+    int again = 0;
+    CHECK(hv_dt_fixup_tree(0, apos) == 1);                 /* already held */
+    (void)again;
+}
+
 int main(void) {
     test_both();
     test_name_only();
@@ -238,6 +283,7 @@ int main(void) {
     test_final_tree();
     test_string_fallback();
     test_string_tree();
+    test_adt();
     if (failures) fprintf(stderr, "test_dt_fixup: %d failure%s\n", failures, failures == 1 ? "" : "s");
     else printf("test_dt_fixup: all pass\n");
     return failures ? 1 : 0;

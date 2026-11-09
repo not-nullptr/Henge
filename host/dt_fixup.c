@@ -30,7 +30,7 @@ static double started, last_pass;
 static uint64_t tracked[8];
 static int ntracked;
 static uint64_t final_off, final_len; /* the tree boot_args names, once known */
-static int have_final;
+static int have_final, final_adt; /* final_adt: Apple's magic-less ADT, not an FDT blob */
 static uint64_t passes, magic_seen, magic_valid, string_hits; /* what the scan saw, for the stop summary */
 static int magic_logged, ba_logged;
 
@@ -42,6 +42,10 @@ static double now(void) {
 
 static uint32_t be32(const uint8_t *p) {
     return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | (uint32_t)p[3];
+}
+
+static uint32_t le32(const uint8_t *p) {
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
 
 /* A flattened device tree (v17 header), whole within avail. */
@@ -60,8 +64,9 @@ static int is_dtb(const uint8_t *b, uint64_t avail) {
    to match. Only the stock value is replaced, so another pass changes nothing,
    and a value iBoot put back is replaced again. */
 static int replace(uint8_t *data, uint32_t len, const char *stock, const char *want) {
-    uint32_t sl = (uint32_t)strlen(stock) + 1, n = (uint32_t)strlen(want) + 1;
+    uint32_t sl = (uint32_t)strlen(stock), n = (uint32_t)strlen(want) + 1;
     if (n > len || len < sl || memcmp(data, stock, sl)) return 0;
+    if (len > sl && data[sl] != 0) return 0; /* the stock string must end here */
     memcpy(data, want, n);
     memset(data + n, 0, len - n);
     return 1;
@@ -77,6 +82,39 @@ static void mismatch(const char *prop, const uint8_t *data, uint32_t len, const 
     diag = 1;
     fprintf(stderr, "hengevm: device tree: %s is %u bytes \"%.*s\" (stock \"%s\", wanted \"%s\"); leaving it\n",
             prop, len, (int)(len < 60 ? len : 60), (const char *)data, stock, want);
+}
+
+/* Apple's ADT (m1n1 proxyclient/m1n1/adt.py): no magic. A node is {u32 prop_count,
+   u32 child_count, prop_count properties, child_count child nodes}; a property is
+   {char name[32], u32 size, u8 value[size & 0x7fffffff]}, each property 4-aligned.
+   Patch identity properties by name and stock value — "model" by name leaves the
+   "compatible" array (driver matching) alone. Returns bytes consumed, 0 on error. */
+static uint64_t adt_walk(uint8_t *p, uint64_t avail, int depth, int *changed) {
+    if (depth > 64 || avail < 8) return 0;
+    uint32_t nprop = le32(p), nchild = le32(p + 4);
+    if (nprop > 4096 || nchild > 4096) return 0;
+    uint64_t off = 8;
+    for (uint32_t i = 0; i < nprop; i++) {
+        if (off + 36 > avail) return 0;
+        const char *name = (const char *)(p + off);
+        uint32_t size = le32(p + off + 32) & 0x7fffffff;
+        off += 36;
+        if (size > avail - off) return 0;
+        if (memchr(name, 0, 32)) {
+            if (want_model[0] && !strcmp(name, "model"))
+                *changed += replace(p + off, size, STOCK_MODEL, want_model);
+            else if (want_name[0] && !strcmp(name, "product-name"))
+                *changed += replace(p + off, size, STOCK_NAME, want_name);
+        }
+        off += (size + 3) & ~3u;
+    }
+    for (uint32_t i = 0; i < nchild; i++) {
+        if (off >= avail) return 0;
+        uint64_t used = adt_walk(p + off, avail - off, depth + 1, changed);
+        if (!used) return 0;
+        off += used;
+    }
+    return off;
 }
 
 int hv_dt_fixup_blob(uint8_t *b, uint64_t avail) {
@@ -134,7 +172,7 @@ int hv_dt_fixup_start(uint8_t *r, uint64_t size, uint64_t base, const char *prod
     ram_size = size;
     ram_base = base;
     want_name[0] = want_model[0] = 0;
-    active = total_changed = ntracked = have_final = diag = 0;
+    active = total_changed = ntracked = have_final = final_adt = diag = 0;
     final_off = final_len = 0;
     passes = magic_seen = magic_valid = string_hits = 0;
     magic_logged = ba_logged = 0;
@@ -159,20 +197,35 @@ int hv_dt_fixup_start(uint8_t *r, uint64_t size, uint64_t base, const char *prod
     return active;
 }
 
+/* Rewrite the held final tree in its own format. */
+static int patch_final(void) {
+    if (final_adt) {
+        int ch = 0;
+        adt_walk(ram + final_off, final_len, 0, &ch);
+        return ch;
+    }
+    return hv_dt_fixup_blob(ram + final_off, final_len);
+}
+
 int hv_dt_fixup_tree(uint64_t offset, uint64_t len) {
     if (!active || have_final) return have_final;
-    if (offset + 40 > ram_size || len < 40 || len > (1u << 20) || offset + len > ram_size ||
-        !is_dtb(ram + offset, len)) {
-        fprintf(stderr, "hengevm: device tree: boot_args names +%llx (%llu bytes), not a tree there yet\n",
-                (unsigned long long)offset, (unsigned long long)len);
-        return 0;
+    if (offset + 40 > ram_size || len < 40 || len > (1u << 20) || offset + len > ram_size) return 0;
+    uint8_t *b = ram + offset;
+    int adt = 0, n = 0;
+    if (is_dtb(b, len)) {
+        n = hv_dt_fixup_blob(b, len);
+    } else {
+        int ch = 0;
+        if (!adt_walk(b, len, 0, &ch)) return 0; /* neither an FDT blob nor an ADT */
+        adt = 1;
+        n = ch;
     }
     have_final = 1;
     final_off = offset;
     final_len = len;
-    fprintf(stderr, "hengevm: device tree: holding the final tree at RAM +%llx (%llu bytes)\n",
-            (unsigned long long)offset, (unsigned long long)len);
-    int n = hv_dt_fixup_blob(ram + offset, len);
+    final_adt = adt;
+    fprintf(stderr, "hengevm: device tree: holding the final tree at RAM +%llx (%llu bytes, %s)\n",
+            (unsigned long long)offset, (unsigned long long)len, adt ? "Apple ADT" : "FDT");
     if (n) {
         fprintf(stderr, "hengevm: device tree (final) at RAM +%llx: rewrote %d string%s\n",
                 (unsigned long long)offset, n, n == 1 ? "" : "s");
@@ -206,6 +259,15 @@ static uint64_t dt_phys(uint64_t v, uint64_t virt_base, uint64_t phys_base) {
     return v; /* already physical */
 }
 
+/* A quick gate before the full parse: an FDT magic, or an ADT root with sane
+   nonzero counts. Keeps the walker off obvious garbage. */
+static int looks_like_tree(const uint8_t *b, uint64_t avail) {
+    if (avail < 40) return 0;
+    if (be32(b) == 0xd00dfeed) return 1;
+    uint32_t nprop = le32(b), nchild = le32(b + 4);
+    return nprop > 0 && nprop <= 4096 && nchild <= 4096;
+}
+
 static void find_boot_args_tree(void) {
     if (have_final) return;
     for (uint64_t off = 0; off + 0x1000 <= ram_size; off += 0x4000) {
@@ -234,11 +296,7 @@ static void find_boot_args_tree(void) {
             if (dt_pa < ram_base || dt_pa - ram_base + 40 > ram_size || dt_len < 40 || dt_len > (1u << 20) ||
                 dt_pa - ram_base + dt_len > ram_size) continue;
             uint64_t dt_off = dt_pa - ram_base;
-            const uint8_t *dt = ram + dt_off;
-            if (dt[0] == 0xd0 && dt[1] == 0x0d && dt[2] == 0xfe && dt[3] == 0xed) {
-                hv_dt_fixup_tree(dt_off, dt_len);
-                return;
-            }
+            if (looks_like_tree(ram + dt_off, dt_len) && hv_dt_fixup_tree(dt_off, dt_len)) return;
         }
     }
 }
@@ -342,7 +400,7 @@ void hv_dt_fixup_poll(void) {
     }
     /* The final tree, once boot_args has named it: re-patch at once, no throttle. */
     if (have_final) {
-        int n = hv_dt_fixup_blob(ram + final_off, final_len);
+        int n = patch_final();
         if (n) {
             fprintf(stderr, "hengevm: device tree (final) at RAM +%llx: rewrote %d string%s\n",
                     (unsigned long long)final_off, n, n == 1 ? "" : "s");
