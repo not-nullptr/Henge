@@ -9,7 +9,8 @@ import UIKit
 ///
 /// The app is the client: `tools/henge-log-listen.py` listens on the computer, prints what
 /// arrives and appends it to a file. Lines are queued while the computer is away, and the queue
-/// is bounded, so a session that runs for hours without a listener cannot grow without limit.
+/// is a ring: a boot's flood with no listener must cost one write per line, never a memmove of
+/// the whole backlog (that is what made the app crawl when the computer went away).
 final class LogStream: ObservableObject {
     static let shared = LogStream()
 
@@ -34,7 +35,8 @@ final class LogStream: ObservableObject {
         var port: UInt16
     }
 
-    /// How many lines are held while the computer is not listening: a few MB at most.
+    /// Lines held while the computer is not listening: a few MB at most. The oldest go first,
+    /// so what is left is the tail — the part that explains what just happened.
     private static let queueLimit = 20_000
     /// Lines per send. Enough to keep up with a boot's flood, small enough not to stall.
     private static let batchLimit = 256
@@ -42,20 +44,25 @@ final class LogStream: ObservableObject {
     private let queue = DispatchQueue(label: "com.henge.logstream")
     private let lock = NSLock()
 
-    // Guarded by `lock`: what the settings say and what is waiting to go out.
+    // Guarded by `lock`: the settings, the ring, and the counters the UI shows.
     private var enabled = false
     private var target: Target?
-    private var pending: [String] = []
+    private var lines = [String?](repeating: nil, count: LogStream.queueLimit)
+    private var head = 0          // where the oldest line is
+    private var count = 0         // how many are held
+    private var greeting: String? // the connection's first line, sent before the rest
     private var scheduled = false
     private var unsentDropped = 0
     /// True while there is no connection to send on: lines are held, and nothing is woken per
     /// line. `handle(.ready)` clears it and pumps.
     private var held = false
+    private var inFlight = false
+    private var sentCount = 0
+    private var droppedCount = 0
 
     // Confined to `queue`.
     private var connection: NWConnection?
     private var ready = false
-    private var batchInFlight = false
     private var attempt = 0
     private var retry: DispatchWorkItem?
     private var publishedSent = 0
@@ -86,24 +93,34 @@ final class LogStream: ObservableObject {
         let want = enabled ? Target(host: host, port: port) : nil
         let changed = want != target
         target = want
-        if want == nil { pending.removeAll() } // nothing to send to: do not hold it
+        if want == nil {
+            // Nothing to send to: do not hold the log in memory either.
+            for i in 0..<count { lines[(head + i) % Self.queueLimit] = nil }
+            head = 0
+            count = 0
+            greeting = nil
+            unsentDropped = 0
+        }
         lock.unlock()
         queue.async { self.reconcile(changed: changed) }
     }
 
     // MARK: - Lines
 
-    /// A line for the computer. Called for every line the log writes, from any thread.
+    /// A line for the computer. Called for every line the log writes, from any thread, so it
+    /// does one ring write and no more.
     func offer(_ line: String) {
         lock.lock()
         guard enabled else { lock.unlock(); return }
-        pending.append(line)
-        if pending.count > Self.queueLimit {
-            let drop = pending.count - Self.queueLimit
-            pending.removeFirst(drop)
-            unsentDropped += drop
+        if count == Self.queueLimit {
+            lines[head] = line
+            head = (head + 1) % Self.queueLimit
+            droppedCount += 1
+        } else {
+            lines[(head + count) % Self.queueLimit] = line
+            count += 1
         }
-        let wake = !scheduled && !held
+        let wake = !scheduled && !held && !inFlight
         if wake { scheduled = true }
         lock.unlock()
         if wake { queue.async { self.step() } }
@@ -128,7 +145,7 @@ final class LogStream: ObservableObject {
 
     private func connect(to want: Target) {
         guard let port = NWEndpoint.Port(rawValue: want.port) else {
-            publish(.waiting("the port is not a port"))
+            publish(.waiting("that port cannot be used"))
             return
         }
         let params = NWParameters.tcp
@@ -157,7 +174,7 @@ final class LogStream: ObservableObject {
             let first = header(want)
             lock.lock()
             held = false
-            pending.insert(first, at: 0)
+            greeting = first
             lock.unlock()
             publish(.connected)
             // Through the log, so the stream carries its own beginning (and proves the round trip).
@@ -190,9 +207,9 @@ final class LogStream: ObservableObject {
         let c = connection
         connection = nil
         ready = false
-        batchInFlight = false
         lock.lock()
         held = true
+        inFlight = false
         lock.unlock()
         c?.stateUpdateHandler = nil
         c?.cancel()
@@ -212,37 +229,47 @@ final class LogStream: ObservableObject {
         lock.lock()
         scheduled = false
         var batch: [String] = []
-        let canSend = ready && !batchInFlight && connection != nil
+        let canSend = ready && !inFlight && connection != nil
         if canSend {
             if unsentDropped > 0 {
                 batch.append("---- \(unsentDropped) lines dropped: the computer was not listening ----")
-                dropped += unsentDropped
+                droppedCount += unsentDropped
                 unsentDropped = 0
             }
-            let n = min(pending.count, Self.batchLimit - batch.count)
-            if n > 0 {
-                batch.append(contentsOf: pending.prefix(n))
-                pending.removeFirst(n)
+            if let greeting {
+                batch.append(greeting)
+                self.greeting = nil
             }
+            let n = min(count, Self.batchLimit - batch.count)
+            for i in 0..<n {
+                let at = (head + i) % Self.queueLimit
+                batch.append(lines[at] ?? "")
+                lines[at] = nil
+            }
+            head = (head + n) % Self.queueLimit
+            count -= n
         }
+        inFlight = canSend && !batch.isEmpty
+        let sending = inFlight
         lock.unlock()
         publishCounts()
-        guard canSend, let c = connection, !batch.isEmpty else { return }
-        batchInFlight = true
+        guard sending, let c = connection else { return }
         let data = Data((batch.joined(separator: "\n") + "\n").utf8)
         let lines = batch.count
         c.send(content: data, completion: .contentProcessed { [weak self] error in
             guard let self else { return }
             self.queue.async {
-                self.batchInFlight = false
+                self.lock.lock()
+                self.inFlight = false
+                let more = self.count > 0 || self.greeting != nil || self.unsentDropped > 0
+                self.lock.unlock()
                 if let error {
                     self.close()
                     if let want = self.currentTarget() { self.scheduleRetry(want, why: Self.describe(error)) }
                     return
                 }
                 self.lock.lock()
-                self.sent += lines
-                let more = !self.pending.isEmpty
+                self.sentCount += lines
                 self.lock.unlock()
                 self.publishCounts()
                 if more { self.pump() }
@@ -265,7 +292,7 @@ final class LogStream: ObservableObject {
 
     private func publishCounts() {
         lock.lock()
-        let sent = self.sent, dropped = self.dropped
+        let sent = sentCount, dropped = droppedCount
         lock.unlock()
         guard sent != publishedSent || dropped != publishedDropped else { return }
         publishedSent = sent
