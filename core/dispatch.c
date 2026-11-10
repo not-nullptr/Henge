@@ -716,6 +716,19 @@ static void print_stats(HvCpu *cpu, int force) {
                 RATE(chained_early), RATE(fast_resumes));
         fprintf(stderr, "  exit requests/s: TLBI posts %.0f, wakes %.0f (of them device work %.0f), kick all %.0f, own %.0f\n",
                 RATE(kick_src[0]), RATE(kick_src[1]), RATE(kick_src[3]), RATE(kick_src[2]), RATE(kick_src[4]));
+        { /* which device is waking the machine: the number that says what a stall is made of */
+            uint64_t tot = 0;
+            for (int k = 0; k < HV_DEVWAKE_COUNT; k++) tot += s->dev_wake[k] - last.dev_wake[k];
+            if (tot) {
+                static const char *names[HV_DEVWAKE_COUNT] = {"other", "usb/touch", "gpu", "input", "net", "sound", "disk", "usb"};
+                fprintf(stderr, "  device wakes/s:");
+                for (int k = 0; k < HV_DEVWAKE_COUNT; k++) {
+                    double n = RATE(dev_wake[k]);
+                    if (n >= 0.5) fprintf(stderr, " %s %.0f", names[k], n);
+                }
+                fprintf(stderr, "\n");
+            }
+        }
         fprintf(stderr, "  light refills %.0fK/s, light branch-cache fills %.0fK/s, chained to other pages %.0f/s\n", RATE(refills) / 1e3,
                 RATE(ijc_light) / 1e3, RATE(xchained));
         fprintf(stderr, "  process switches: %.0f/s saved, %.0f/s restored, %.0f/s dropped by a TLBI (%.0f entries each)\n", RATE(stash_saves), RATE(stash_hits), RATE(stash_stale),

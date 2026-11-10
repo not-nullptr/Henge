@@ -153,7 +153,7 @@ static void *worker(void *opaque) {
         pthread_cond_broadcast(&b->done_cv);
         if (fence) pthread_cond_broadcast(&b->cv);
         pthread_mutex_unlock(&b->mu);
-        hv_machine_wake(b->vio.m);
+        hv_machine_wake_dev(b->vio.m, HV_DEVWAKE_BLK);
     }
     return NULL;
 }

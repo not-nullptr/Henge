@@ -948,7 +948,7 @@ void hv_xhci_key(HvXhci *x, uint8_t usage, int down) {
     }
     if (x->rtail - x->rhead < HV_XHCI_REPORTS) memcpy(x->reports[x->rtail++ % HV_XHCI_REPORTS], s, 8);
     pthread_mutex_unlock(&x->mu);
-    hv_machine_wake(x->m);
+    hv_machine_wake_dev(x->m, HV_DEVWAKE_XHCI);
 }
 
 /* Linux input key codes to HID keyboard usages (the same table macOS's virtio
@@ -1083,7 +1083,7 @@ void hv_xhci_touch(HvXhci *x, int id, int phase, int px, int py, uint32_t ts_ms)
         }
     }
     pthread_mutex_unlock(&x->mu);
-    hv_machine_wake(x->m);
+    hv_machine_wake_dev(x->m, HV_DEVWAKE_XHCI);
 }
 
 /* Commit one frame with the current state of all the fingers: a move batch ends
@@ -1093,7 +1093,7 @@ void hv_xhci_touch_frame(HvXhci *x, uint32_t ts_ms) {
     pthread_mutex_lock(&x->mu);
     tp_queue(x, ts_ms);
     pthread_mutex_unlock(&x->mu);
-    hv_machine_wake(x->m);
+    hv_machine_wake_dev(x->m, HV_DEVWAKE_XHCI);
 }
 
 void hv_xhci_touch_button(HvXhci *x, int down) {
@@ -1104,7 +1104,7 @@ void hv_xhci_touch_button(HvXhci *x, int down) {
         tp_queue(x, 0);
     }
     pthread_mutex_unlock(&x->mu);
-    hv_machine_wake(x->m);
+    hv_machine_wake_dev(x->m, HV_DEVWAKE_XHCI);
 }
 
 void hv_xhci_poll(HvXhci *x) {

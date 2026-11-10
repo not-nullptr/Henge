@@ -73,6 +73,7 @@ typedef struct HvStats {
     uint64_t chained, ijc_fills, ijc_resets;
     uint64_t xchained;
     uint64_t kick_src[5];     /* exit_req set by: a request (TLBI), hv_cpu_wake, kick_all, hv_machine_wake, the CPU itself */        /* of them, exits to another page (TLB-checked) */
+    uint64_t dev_wake[HV_DEVWAKE_COUNT];   /* of the hv_machine_wake ones: which device asked (HV_DEVWAKE_*) */
     uint64_t syncs, sync_ticks;        /* TLBI acks waited for, and host ticks spent waiting */
     uint64_t sync_len[4], sync_len_ticks[4]; /* those waits by length: under 10 us, 100 us, 1 ms, longer */
     uint64_t sync_probe[4];            /* a wait 100 us long looks at the other CPU: thread off a core, on one, mid walk, mid cache fill */
@@ -363,5 +364,19 @@ void hv_cpu_kick(HvCpu *cpu);
 /* From any thread: device work is waiting for the CPU thread's tick. Makes a
    running block leave and ends a WFI sleep. */
 void hv_machine_wake(HvMachine *m);
+
+/* Which device a wake came from, for the stats line (hv_machine_wake_dev). */
+enum {
+    HV_DEVWAKE_OTHER = 0,
+    HV_DEVWAKE_XHCI,
+    HV_DEVWAKE_PVG,
+    HV_DEVWAKE_INPUT,
+    HV_DEVWAKE_NET,
+    HV_DEVWAKE_SND,
+    HV_DEVWAKE_BLK,
+    HV_DEVWAKE_USB,
+    HV_DEVWAKE_COUNT,
+};
+void hv_machine_wake_dev(HvMachine *m, int kind);
 
 #endif

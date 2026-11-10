@@ -186,7 +186,7 @@ int hv_vusb_send(HvVirtioUsb *d, uint8_t type, uint8_t ep, const void *data, uin
         free(m.data);
         return -1;
     }
-    hv_machine_wake(d->vio.m);
+    hv_machine_wake_dev(d->vio.m, HV_DEVWAKE_USB);
     return 0;
 }
 
@@ -196,7 +196,7 @@ int hv_vusb_send_in(HvVirtioUsb *d, uint8_t ep, uint32_t len) {
     int ok = d->online && d->out_tail - d->out_head < HV_VUSB_RING;
     if (ok) d->out[d->out_tail++ % HV_VUSB_RING] = m;
     pthread_mutex_unlock(&d->mu);
-    if (ok) hv_machine_wake(d->vio.m);
+    if (ok) hv_machine_wake_dev(d->vio.m, HV_DEVWAKE_USB);
     return ok ? 0 : -1;
 }
 

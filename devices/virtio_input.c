@@ -109,7 +109,7 @@ void hv_virtio_input_send(HvVirtioInput *d, uint16_t type, uint16_t code, int32_
     d->ring[i].code = code;
     d->ring[i].value = (uint32_t)value;
     pthread_mutex_unlock(&d->mu);
-    hv_machine_wake(d->vio.m);
+    hv_machine_wake_dev(d->vio.m, HV_DEVWAKE_INPUT);
 }
 
 void hv_virtio_input_poll(HvVirtioInput *d) {

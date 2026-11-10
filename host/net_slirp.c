@@ -108,7 +108,7 @@ static slirp_ssize_t send_packet(const void *buf, size_t len, void *opaque) {
     (void)opaque;
     if (len > MAX_FRAME) return (slirp_ssize_t)len;
     log_frame("rx", buf, (uint32_t)len);
-    if (push(&to_guest, buf, (uint32_t)len)) hv_machine_wake(machine);
+    if (push(&to_guest, buf, (uint32_t)len)) hv_machine_wake_dev(machine, HV_DEVWAKE_NET);
     return (slirp_ssize_t)len;
 }
 
@@ -239,7 +239,7 @@ static void *net_thread(void *unused) {
 static void dns_send(const uint8_t *frame, uint32_t len, int guest) {
     if (guest) {
         log_frame("rx dns", frame, len);
-        if (push(&to_guest, frame, len)) hv_machine_wake(machine);
+        if (push(&to_guest, frame, len)) hv_machine_wake_dev(machine, HV_DEVWAKE_NET);
     } else if (push(&to_host, frame, len)) {
         char c = 0;
         (void)!write(wake_pipe[1], &c, 1);

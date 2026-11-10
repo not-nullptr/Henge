@@ -263,7 +263,7 @@ uint32_t hv_virtio_snd_pull(HvVirtioSnd *d, void *buf, uint32_t len) {
     }
     /* compare-exchange: a release on the CPU thread may have moved it on */
     atomic_compare_exchange_strong(&d->consumed, &c, c + n);
-    if (n) hv_machine_wake(d->vio.m);
+    if (n) hv_machine_wake_dev(d->vio.m, HV_DEVWAKE_SND);
     return n;
 }
 

@@ -336,7 +336,14 @@ void hv_machine_kick_all(HvMachine *m) {
 
 /* Device work is for CPU 0, which polls the devices. */
 void hv_machine_wake(HvMachine *m) {
-    if (m->stats_interval) m->stats.kick_src[3]++;
+    hv_machine_wake_dev(m, HV_DEVWAKE_OTHER);
+}
+
+void hv_machine_wake_dev(HvMachine *m, int kind) {
+    if (m->stats_interval) {
+        m->stats.kick_src[3]++;
+        if ((unsigned)kind < HV_DEVWAKE_COUNT) m->stats.dev_wake[kind]++;
+    }
     if (m->cpu) hv_cpu_wake(m->cpu);
 }
 
